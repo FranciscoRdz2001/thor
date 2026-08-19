@@ -1,0 +1,25 @@
+name: thor
+description: >-
+  Núcleo del SDK de diagnóstico Thor: línea de tiempo correlacionada de
+  eventos (navegación, red, errores, interacciones, estado), redacción por
+  allowlist, persistencia resistente a crashes y export de reportes.
+version: 0.1.0
+repository: https://github.com/FranciscoRdz2001/thor
+publish_to: none # hasta decidir publicación
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+# Dart puro a propósito: el núcleo no conoce Flutter, ni dio, ni bloc.
+# Los adaptadores (thor_flutter, thor_dio, thor_bloc) dependen de él,
+# nunca al revés.
+dependencies:
+  clock: ^1.1.1
+  meta: ^1.15.0
+  path: ^1.9.0
+
+dev_dependencies:
+  test: ^1.25.0
+  very_good_analysis: ^7.0.0

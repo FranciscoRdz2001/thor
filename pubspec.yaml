@@ -1,0 +1,9 @@
+name: thor_workspace
+description: Workspace raíz de Thor — SDK de diagnóstico para Flutter.
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+workspace:
+  - packages/thor
