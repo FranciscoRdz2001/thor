@@ -1,0 +1,26 @@
+name: thor_flutter
+description: >-
+  Adaptador Flutter del SDK Thor: NavigatorObserver universal, captura de
+  errores de framework y async, interacciones por hit-test y contexto de
+  dispositivo — todo automático, sin instrumentar rutas.
+version: 0.1.0
+repository: https://github.com/FranciscoRdz2001/thor
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+  flutter: '>=3.24.0'
+
+resolution: workspace
+
+dependencies:
+  clock: ^1.1.1
+  flutter:
+    sdk: flutter
+  meta: ^1.15.0
+  thor: ^0.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  very_good_analysis: ^7.0.0
