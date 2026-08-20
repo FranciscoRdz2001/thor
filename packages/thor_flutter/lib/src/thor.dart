@@ -78,11 +78,17 @@ class Thor {
           appInfo: appInfo,
           deviceInfo: _collectDeviceInfo(),
         );
+        ThorNetworkCapture.install();
+        await body();
+        // Los capturadores de error se instalan DESPUÉS del body a
+        // propósito: las apps asignan sus propios handlers
+        // (Crashlytics/logging) durante el arranque, y si Thor se
+        // instalara antes, el handler de la app lo pisaría. En este orden
+        // Thor queda al frente y DELEGA al de la app; los errores del
+        // propio arranque los cubre la zona de todos modos.
         ErrorCapture.install();
         InteractionCapture.install();
-        ThorNetworkCapture.install();
         _watchLifecycle();
-        await body();
       },
       (error, stack) {
         ThorCore.instance?.recorder.record(
