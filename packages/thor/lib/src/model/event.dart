@@ -62,8 +62,7 @@ class ScreenId {
   /// Nombre presentable: clase > ruta > tipo de ruta > `'Desconocida'`.
   /// El tipo de ruta como último recurso hace legibles los diálogos y
   /// sheets sin nombre (`DialogRoute<void>`).
-  String get display =>
-      widgetClass ?? routeName ?? routeType ?? 'Desconocida';
+  String get display => widgetClass ?? routeName ?? routeType ?? 'Desconocida';
 
   /// Serializa omitiendo campos nulos.
   Map<String, Object?> toJson() => {

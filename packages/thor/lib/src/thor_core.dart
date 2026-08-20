@@ -144,8 +144,7 @@ class ThorCore {
   /// Fotografía todos los contextos registrados (redactados). Un proveedor
   /// que lanza no tumba a los demás: su error queda como su propio valor.
   Map<String, Object?> snapshotContext() => {
-        for (final MapEntry(:key, value: provider)
-            in _contextProviders.entries)
+        for (final MapEntry(:key, value: provider) in _contextProviders.entries)
           key: _safeContext(provider),
       };
 

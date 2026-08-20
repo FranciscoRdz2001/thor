@@ -54,10 +54,24 @@ class RedactionPolicy {
   // comparan contra _normalize(key); una entrada con guión aquí jamás
   // matchearía (bug cazado por test).
   static const _hardDenied = {
-    'authorization', 'cookie', 'set_cookie', 'x_api_key', 'api_key',
-    'apikey', 'password', 'contrasena', 'contraseña', 'token',
-    'access_token', 'refresh_token', 'secret', 'client_secret',
-    'private_key', 'card_number', 'cvv', 'pin',
+    'authorization',
+    'cookie',
+    'set_cookie',
+    'x_api_key',
+    'api_key',
+    'apikey',
+    'password',
+    'contrasena',
+    'contraseña',
+    'token',
+    'access_token',
+    'refresh_token',
+    'secret',
+    'client_secret',
+    'private_key',
+    'card_number',
+    'cvv',
+    'pin',
   };
 
   static String _normalize(String key) =>

@@ -53,8 +53,8 @@ class _ThorHttpOverrides extends HttpOverrides {
 
   @override
   HttpClient createHttpClient(SecurityContext? context) {
-    final inner = previous?.createHttpClient(context) ??
-        super.createHttpClient(context);
+    final inner =
+        previous?.createHttpClient(context) ?? super.createHttpClient(context);
     return _SpyHttpClient(inner);
   }
 
@@ -155,8 +155,7 @@ class _SpyHttpClient implements HttpClient {
   @override
   int? get maxConnectionsPerHost => inner.maxConnectionsPerHost;
   @override
-  set maxConnectionsPerHost(int? value) =>
-      inner.maxConnectionsPerHost = value;
+  set maxConnectionsPerHost(int? value) => inner.maxConnectionsPerHost = value;
   @override
   String? get userAgent => inner.userAgent;
   @override
@@ -253,8 +252,7 @@ class _SpyRequest implements HttpClientRequest {
   void writeCharCode(int charCode) => write(String.fromCharCode(charCode));
 
   @override
-  Future<void> addStream(Stream<List<int>> stream) =>
-      inner.addStream(
+  Future<void> addStream(Stream<List<int>> stream) => inner.addStream(
         stream.map((chunk) {
           _tee(chunk);
           return chunk;

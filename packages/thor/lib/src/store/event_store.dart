@@ -86,8 +86,7 @@ class EventStore {
     int? sinceSeq,
   }) {
     final all = <ThorEvent>[
-      for (final k in kinds ?? ThorEventKind.values.toSet())
-        ..._buffers[k]!,
+      for (final k in kinds ?? ThorEventKind.values.toSet()) ..._buffers[k]!,
     ]..sort((a, b) => a.seq.compareTo(b.seq));
     return [
       for (final e in all)

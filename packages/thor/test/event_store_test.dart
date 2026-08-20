@@ -69,12 +69,11 @@ void main() {
         ..add(_event(0, ThorEventKind.log))
         ..add(_event(1, ThorEventKind.error))
         ..add(_event(2, ThorEventKind.error));
-      expect(
-        store
-            .timeline(kinds: {ThorEventKind.error}, sinceSeq: 2)
-            .map((e) => e.seq),
-        [2],
+      final filtered = store.timeline(
+        kinds: {ThorEventKind.error},
+        sinceSeq: 2,
       );
+      expect(filtered.map((e) => e.seq), [2]);
     });
   });
 

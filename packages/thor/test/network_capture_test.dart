@@ -110,8 +110,7 @@ void main() {
     expect(networkEvents().single.payload['statusCode'], 500);
   });
 
-  test('fallo de conexión graba el evento con error y sin response',
-      () async {
+  test('fallo de conexión graba el evento con error y sin response', () async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(milliseconds: 200);
     // Puerto cerrado: nadie escucha.
