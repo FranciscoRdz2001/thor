@@ -1,0 +1,21 @@
+name: thor_bloc
+description: >-
+  Adaptador bloc del SDK Thor: un BlocObserver global captura las
+  transiciones de TODOS los blocs/cubits (tipos por defecto, valores solo
+  por allowlist) y compone con el observer que la app ya tenga.
+version: 0.1.0
+repository: https://github.com/FranciscoRdz2001/thor
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dependencies:
+  bloc: ^9.0.0
+  thor: ^0.1.0
+
+dev_dependencies:
+  test: ^1.25.0
+  very_good_analysis: ^7.0.0

@@ -80,6 +80,7 @@ class Thor {
         );
         ErrorCapture.install();
         InteractionCapture.install();
+        ThorNetworkCapture.install();
         _watchLifecycle();
         await body();
       },

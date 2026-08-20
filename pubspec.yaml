@@ -7,4 +7,5 @@ environment:
 
 workspace:
   - packages/thor
+  - packages/thor_bloc
   - packages/thor_flutter

@@ -7,8 +7,10 @@ library;
 
 export 'src/model/event.dart';
 export 'src/model/session.dart';
+export 'src/network/network_capture.dart' show ThorNetworkCapture;
 export 'src/persistence/journal.dart';
 export 'src/recorder.dart';
 export 'src/redaction/redaction_policy.dart';
 export 'src/store/event_store.dart';
 export 'src/thor_core.dart';
+export 'src/util/origin.dart';

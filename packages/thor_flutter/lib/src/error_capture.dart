@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
-import 'package:thor/thor.dart';
+import 'package:thor/thor.dart' hide originFromStack;
+import 'package:thor/thor.dart' as thor_core show originFromStack;
 
 /// Instala la captura de errores componiendo con los handlers existentes.
 ///
@@ -83,30 +84,9 @@ class ErrorCapture {
   static String _truncate(String s, int max) =>
       s.length <= max ? s : '${s.substring(0, max)}…(+${s.length - max})';
 
-  /// Primer frame del stack que sea código de la APP (no framework, no
-  /// paquetes): eso es el `archivo:línea` que lleva del síntoma al código.
-  ///
-  /// Heurística: primer frame `package:X/...` cuyo paquete no esté en la
-  /// lista de infraestructura conocida. Pública para que el capturador de
-  /// red la reutilice.
-  static String? originFromStack(StackTrace stack) {
-    final lines = stack.toString().split('\n');
-    for (final line in lines) {
-      final match = _packageFrame.firstMatch(line);
-      if (match == null) continue;
-      final package = match.group(1)!;
-      if (_infraPackages.contains(package)) continue;
-      return match.group(0);
-    }
-    return null;
-  }
-
-  static final _packageFrame =
-      RegExp(r'package:([a-z0-9_]+)/[^\s):]+:\d+(?::\d+)?');
-
-  static const _infraPackages = {
-    'flutter', 'flutter_test', 'thor', 'thor_flutter', 'thor_dio',
-    'thor_bloc', 'dio', 'http', 'bloc', 'flutter_bloc', 'go_router',
-    'stack_trace', 'async', 'meta',
-  };
+  /// Primer frame del stack que sea código de la APP. Delegado al núcleo
+  /// (`originFromStack` de package:thor) — una sola heurística para
+  /// errores, red y bloc.
+  static String? originFromStack(StackTrace stack) =>
+      thor_core.originFromStack(stack);
 }
