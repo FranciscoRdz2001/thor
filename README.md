@@ -9,10 +9,12 @@ para que el dev (o una IA) llegue del síntoma al código.
 
 | Paquete | Rol | Estado |
 |---|---|---|
-| `packages/thor` | Núcleo Dart puro: eventos, buffers por familia, redacción allowlist, journal resistente a crashes | ✅ |
-| `packages/thor_flutter` | NavigatorObserver, errores de framework, interacciones, contexto de dispositivo | pendiente |
-| `packages/thor_dio` / red global | Captura HTTP vía `HttpOverrides.global` + detalle dio | pendiente |
-| `packages/thor_bloc` | Observer de blocs (tipos por defecto, valores por allowlist) | pendiente |
+| `packages/thor` | Núcleo Dart puro: eventos, buffers, redacción allowlist, journal anti-crash, red por HttpOverrides, narrador, agregados, reporte .gz | ✅ |
+| `packages/thor_flutter` | Thor.run, observer universal, errores, interacciones, rendimiento, overlay/inspector en dispositivo, aviso de crash, share | ✅ |
+| `packages/thor_bloc` | Observer de blocs con delegate (tipos por defecto) | ✅ |
+| `packages/thor_test` | `thorAutoReport()`: cada test fallido genera su reporte (origen automatedTest) | ✅ |
+
+Integrado en: `stelyt_pos_app` y `ssoma_checador_app` (gate `--dart-define=THOR=true`, default debug).
 
 ## Principios
 
