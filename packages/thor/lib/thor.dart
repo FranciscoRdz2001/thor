@@ -14,6 +14,7 @@ export 'src/redaction/redaction_policy.dart';
 export 'src/report/aggregates.dart';
 export 'src/report/narrator.dart';
 export 'src/report/report.dart';
+export 'src/report/session_diff.dart';
 export 'src/store/event_store.dart';
 export 'src/thor_core.dart';
 export 'src/util/origin.dart';
