@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/overlay/crash_prompt.dart';
 import 'package:thor_flutter/src/overlay/inspector_page.dart';
 
 /// Burbuja flotante de Thor — el punto de entrada de QA en el dispositivo.
@@ -40,6 +41,9 @@ class ThorOverlayManager {
     }
     _entry = OverlayEntry(builder: (context) => const _ThorBubble());
     overlay.insert(_entry!);
+    // Con la burbuja ya montada: si la sesión anterior murió, ofrecer su
+    // reporte de una vez.
+    ThorCrashPrompt.maybeShow(navigator);
   }
 
   /// Desmonta la burbuja (tests / apagado) y resetea el estado del

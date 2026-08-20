@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/overlay/report_share.dart';
 
 /// Inspector en pantalla: la vista Chucker-style de Thor, pero sobre la
 /// línea de tiempo completa — Red, Pasos de reproducción y Errores.
@@ -33,6 +34,11 @@ class ThorInspectorPage extends StatelessWidget {
                       icon: const Icon(Icons.copy_all),
                       onPressed: () => _copyReport(context, core),
                     ),
+                    IconButton(
+                      tooltip: 'Compartir reporte (.gz)',
+                      icon: const Icon(Icons.ios_share),
+                      onPressed: () => _shareReport(context, core),
+                    ),
                   ],
                   bottom: const TabBar(
                     tabs: [
@@ -60,6 +66,17 @@ class ThorInspectorPage extends StatelessWidget {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Reporte copiado al portapapeles')),
+      );
+    }
+  }
+
+  Future<void> _shareReport(BuildContext context, ThorCore core) async {
+    final outcome = await ThorReportSharer.share(ThorReport.fromCore(core));
+    if (context.mounted && outcome == ThorShareOutcome.copiedToClipboard) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sin share disponible: reporte al portapapeles'),
+        ),
       );
     }
   }

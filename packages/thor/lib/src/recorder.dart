@@ -29,13 +29,21 @@ class ThorRecorder {
   /// (o `Thor.setScreen` para navegación que el Navigator no ve).
   ScreenId? currentScreen;
 
-  /// Silencio temporal: mientras es `true` no se graba nada. Lo usa el
-  /// inspector en pantalla — sus propias navegaciones y taps contaminarían
-  /// la línea de tiempo que está mostrando.
+  /// Silencio SELECTIVO: mientras es `true` no se graban navegación ni
+  /// interacciones — lo que el inspector en pantalla genera al usarse y
+  /// que contaminaría la línea de tiempo que muestra. Red, errores, estado
+  /// y entorno SIGUEN grabándose: la app de fondo (sync, sockets) no deja
+  /// de trabajar porque QA esté mirando el panel, y perder ESO sí sería
+  /// perder evidencia.
   bool muted = false;
 
+  static const _mutedKinds = {
+    ThorEventKind.navigation,
+    ThorEventKind.interaction,
+  };
+
   /// Graba un evento de [kind] con [payload]. Devuelve `null` si el
-  /// grabador está silenciado ([muted]).
+  /// grabador está silenciado ([muted]) y la familia es silenciable.
   ///
   /// [origin] es el `archivo:línea` de la app que disparó el evento;
   /// [screenOverride] fuerza la pantalla (para eventos retro-corregidos).
@@ -45,7 +53,7 @@ class ThorRecorder {
     String? origin,
     ScreenId? screenOverride,
   }) {
-    if (muted) return null;
+    if (muted && _mutedKinds.contains(kind)) return null;
     final now = clock.now();
     final event = ThorEvent(
       seq: _seq++,
