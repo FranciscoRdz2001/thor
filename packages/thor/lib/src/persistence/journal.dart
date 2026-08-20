@@ -108,8 +108,22 @@ class SessionJournal {
     }
   }
 
+  Future<void> _flushChain = Future<void>.value();
+
   /// Escribe lo pendiente a disco.
-  Future<void> flush() async {
+  ///
+  /// Serializado: cada flush espera al anterior. Sin esto, un flush urgente
+  /// en vuelo y un `await flush()` posterior podían resolverse fuera de
+  /// orden y el caller creía persistido lo que aún no tocaba disco
+  /// (flake real cazado en CI).
+  Future<void> flush() {
+    final next = _flushChain.then((_) => _doFlush());
+    // La cadena nunca se rompe por un fallo de escritura previo.
+    _flushChain = next.catchError((Object _) {});
+    return next;
+  }
+
+  Future<void> _doFlush() async {
     _flushTimer?.cancel();
     _flushTimer = null;
     final sink = _sink;
