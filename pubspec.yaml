@@ -9,3 +9,4 @@ workspace:
   - packages/thor
   - packages/thor_bloc
   - packages/thor_flutter
+  - packages/thor_test

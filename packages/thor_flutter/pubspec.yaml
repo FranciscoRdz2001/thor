@@ -18,7 +18,7 @@ dependencies:
   flutter:
     sdk: flutter
   meta: ^1.15.0
-  share_plus: ^10.1.0
+  share_plus: '>=10.1.0 <13.0.0'
   thor: ^0.1.0
 
 dev_dependencies:

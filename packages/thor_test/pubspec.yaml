@@ -1,0 +1,25 @@
+name: thor_test
+description: >-
+  Hook de Thor para pruebas automatizadas: cada test que FALLA genera su
+  reporte Thor solo (origen automatedTest), con la línea de tiempo de lo
+  que la prueba hizo — una corrida nocturna se convierte en evidencia lista.
+version: 0.1.0
+repository: https://github.com/FranciscoRdz2001/thor
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+  flutter: '>=3.24.0'
+
+resolution: workspace
+
+dependencies:
+  flutter_test:
+    sdk: flutter
+  # Estado del test en curso (Invoker). Dependencia directa a propósito:
+  # se usa un implementation import y conviene fijar el rango.
+  test_api: '>=0.7.0 <0.8.0'
+  thor: ^0.1.0
+
+dev_dependencies:
+  very_good_analysis: ^7.0.0
