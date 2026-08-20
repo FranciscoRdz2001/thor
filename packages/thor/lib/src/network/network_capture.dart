@@ -6,6 +6,7 @@ import 'dart:typed_data' show BytesBuilder;
 import 'package:clock/clock.dart';
 
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/network/raw_network_store.dart';
 import 'package:thor/src/redaction/redaction_policy.dart';
 import 'package:thor/src/thor_core.dart';
 import 'package:thor/src/util/origin.dart';
@@ -27,6 +28,11 @@ class ThorNetworkCapture {
 
   /// Máximo de bytes de cuerpo (petición y respuesta) retenidos por evento.
   static const int maxBodyBytes = 8 * 1024;
+
+  /// Si además del cURL redactado se retiene el CRUDO (reproducible) en el
+  /// [RawNetworkStore] — solo memoria, jamás persistido. Apágalo si ni
+  /// siquiera en RAM quieres tokens retenidos.
+  static bool captureRawCurl = true;
 
   /// Instala la captura. Idempotente.
   static void install() {
@@ -341,18 +347,29 @@ class _SpyRequest implements HttpClientRequest {
         'error': error.runtimeType.toString(),
         'errorMessage': error.toString(),
       },
-      'curl': _buildCurl(redaction, requestHeaders),
+      'curl': _buildRedactedCurl(redaction, requestHeaders),
     };
 
-    core.recorder.record(ThorEventKind.network, payload, origin: origin);
+    final event =
+        core.recorder.record(ThorEventKind.network, payload, origin: origin);
+
+    // cURL CRUDO (reproducible): SOLO memoria, jamás en el payload — el
+    // payload viaja al journal/reportes y un token no debe tocar disco.
+    if (event != null && ThorNetworkCapture.captureRawCurl) {
+      RawNetworkStore.put(event.seq, _buildRawCurl(requestHeaders));
+    }
   }
 
-  /// cURL reproducible con headers YA redactados — oro para pegar en un
-  /// chat o ticket sin fugar el token.
-  String _buildCurl(RedactionPolicy redaction, Map<String, String> headers) {
+  /// cURL con headers/body/query YA redactados — para tickets y chats sin
+  /// fugar el token. Documenta; para reproducir está el crudo del
+  /// [RawNetworkStore].
+  String _buildRedactedCurl(
+    RedactionPolicy redaction,
+    Map<String, String> headers,
+  ) {
     final parts = ['curl', '-X', inner.method];
     redaction.redactFlatMap(headers).forEach(
-          (k, v) => parts.add("-H '$k: $v'"),
+          (k, v) => parts.add("-H ${_sq('$k: $v')}"),
         );
     if (_requestBody.isNotEmpty) {
       final body = _decodeBody(
@@ -360,12 +377,31 @@ class _SpyRequest implements HttpClientRequest {
         inner.headers.contentType?.mimeType,
         redaction,
       );
-      if (body is String) parts.add("-d '$body'");
-      if (body is Map || body is List) parts.add("-d '${jsonEncode(body)}'");
+      if (body is String) parts.add('-d ${_sq(body)}');
+      if (body is Map || body is List) {
+        parts.add('-d ${_sq(jsonEncode(body))}');
+      }
     }
-    parts.add("'${_redactUrl(inner.uri, redaction)}'");
+    parts.add(_sq(_redactUrl(inner.uri, redaction).toString()));
     return parts.join(' ');
   }
+
+  /// cURL crudo, ejecutable tal cual (headers reales, body real, URL real).
+  String _buildRawCurl(Map<String, String> headers) {
+    final parts = ['curl', '-X', inner.method];
+    headers.forEach((k, v) => parts.add('-H ${_sq('$k: $v')}'));
+    if (_requestBody.isNotEmpty) {
+      final body =
+          utf8.decode(_requestBody.toBytes(), allowMalformed: true);
+      parts.add('-d ${_sq(body)}');
+    }
+    parts.add(_sq(inner.uri.toString()));
+    return parts.join(' ');
+  }
+
+  /// Envuelve en comillas simples con escape POSIX (`'` → `'\''`) — un body
+  /// con apóstrofos rompía el comando generado.
+  static String _sq(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
   static Uri _redactUrl(Uri uri, RedactionPolicy redaction) =>
       uri.queryParameters.isEmpty

@@ -167,22 +167,37 @@ class _NetworkDetailPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = event.payload;
     final curl = p['curl'] as String?;
+    // El crudo (reproducible) vive SOLO en memoria y puede ya no existir
+    // (cuota del RawNetworkStore).
+    final rawCurl = RawNetworkStore.forSeq(event.seq);
     return Scaffold(
       appBar: AppBar(
         title: Text('${p['method']} #${event.seq}'),
         actions: [
-          if (curl != null)
-            IconButton(
+          if (curl != null || rawCurl != null)
+            PopupMenuButton<String>(
               tooltip: 'Copiar cURL',
               icon: const Icon(Icons.terminal),
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: curl));
+              onSelected: (value) async {
+                await Clipboard.setData(ClipboardData(text: value));
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('cURL copiado')),
                   );
                 }
               },
+              itemBuilder: (_) => [
+                if (rawCurl != null)
+                  PopupMenuItem(
+                    value: rawCurl,
+                    child: const Text('Copiar cURL real (con secretos)'),
+                  ),
+                if (curl != null)
+                  PopupMenuItem(
+                    value: curl,
+                    child: const Text('Copiar cURL redactado (para ticket)'),
+                  ),
+              ],
             ),
         ],
       ),

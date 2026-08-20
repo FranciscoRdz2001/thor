@@ -6,6 +6,7 @@ import 'package:meta/meta.dart';
 
 import 'package:thor/src/model/event.dart';
 import 'package:thor/src/model/session.dart';
+import 'package:thor/src/network/raw_network_store.dart';
 import 'package:thor/src/persistence/journal.dart';
 import 'package:thor/src/recorder.dart';
 import 'package:thor/src/redaction/redaction_policy.dart';
@@ -158,6 +159,8 @@ class ThorCore {
 
   /// Cierre limpio (sesión terminó bien). Tras esto, [instance] es `null`.
   Future<void> dispose() async {
+    // Los cURLs crudos son de ESTA sesión: mueren con ella.
+    RawNetworkStore.clear();
     _unsubscribeJournal?.call();
     await journal?.close();
     if (identical(_instance, this)) _instance = null;

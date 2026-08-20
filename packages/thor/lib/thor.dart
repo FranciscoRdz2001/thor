@@ -8,6 +8,7 @@ library;
 export 'src/model/event.dart';
 export 'src/model/session.dart';
 export 'src/network/network_capture.dart' show ThorNetworkCapture;
+export 'src/network/raw_network_store.dart';
 export 'src/persistence/journal.dart';
 export 'src/recorder.dart';
 export 'src/redaction/redaction_policy.dart';
