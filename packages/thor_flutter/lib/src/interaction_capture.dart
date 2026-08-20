@@ -44,6 +44,16 @@ class InteractionCapture {
   /// retro-corrección de pantalla.
   static const _pageSuffixes = ['Page', 'Screen', 'View'];
 
+  /// Widgets del framework que MATCHEAN los sufijos pero jamás son la
+  /// página de la app (bug real: SingleChildScrollView se reportaba como
+  /// pantalla en el POS). Si aparece un falso positivo nuevo, va aquí.
+  static const _pageDenylist = {
+    'SingleChildScrollView', 'ListView', 'GridView', 'CustomScrollView',
+    'NestedScrollView', 'PageView', 'TabBarView', 'ScrollView',
+    'BoxScrollView', 'ReorderableListView', 'InteractiveViewer',
+    'DraggableScrollableSheet',
+  };
+
   /// Instala el listener global de punteros. Idempotente.
   static void install() {
     if (_installed) return;
@@ -125,7 +135,8 @@ class InteractionCapture {
         } else if (_primitiveTypes.contains(typeName)) {
           bestPrimitive = element;
         }
-        if (_pageSuffixes.any(typeName.endsWith)) {
+        if (_pageSuffixes.any(typeName.endsWith) &&
+            !_pageDenylist.contains(typeName)) {
           pageClass = typeName;
         }
       }
