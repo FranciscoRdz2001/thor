@@ -76,9 +76,20 @@ class ErrorCapture {
         'message': _truncate(error.toString(), 500),
         if (library != null) 'library': library,
         if (stack != null) 'stack': _truncate(stack.toString(), 4000),
+        // "¿Qué fue lo último que hizo el usuario?" — la pregunta #1 al
+        // triar un crash. Se copia AL evento (no solo al timeline) para
+        // que la agrupación por huella la conserve.
+        ..._lastActionOf(core),
       },
       origin: stack == null ? null : originFromStack(stack),
     );
+  }
+
+  static Map<String, Object?> _lastActionOf(ThorCore core) {
+    final tap = core.store.lastOfKind(ThorEventKind.interaction);
+    if (tap == null) return const {};
+    final label = tap.payload['label'] ?? tap.payload['widget'];
+    return {'lastAction': 'tocó «$label» (#${tap.seq})'};
   }
 
   static String _truncate(String s, int max) =>

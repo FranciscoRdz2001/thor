@@ -52,9 +52,9 @@ void main() {
       ]);
 
       expect(steps, '''
-1. Abrió LoginPage
-2. Llenó «usuario»
-3. Tocó «Entrar» (ElevatedButton)
+1. [+0.0s] Abrió LoginPage
+2. [+1.0s] Llenó «usuario»
+3. [+2.0s] Tocó «Entrar» (ElevatedButton)
    → POST /auth/login  500 ✗  (2100ms)
    ✗ StateError en package:app/login.dart:88''');
     });
@@ -90,7 +90,7 @@ void main() {
           },
         ),
       ]);
-      expect(steps, startsWith('1. →'));
+      expect(steps, startsWith('1. [+0.0s] →'));
     });
 
     test('timeline vacía produce narrativa vacía, no explosión', () {

@@ -100,6 +100,13 @@ class EventStore {
   int get length =>
       _buffers.values.fold(0, (sum, buffer) => sum + buffer.length);
 
+  /// Último evento vivo de [kind], o `null`. Barato (cola por familia) —
+  /// lo usa la captura de errores para adjuntar "última acción del usuario".
+  ThorEvent? lastOfKind(ThorEventKind kind) {
+    final buffer = _buffers[kind]!;
+    return buffer.isEmpty ? null : buffer.last;
+  }
+
   /// Vacía todos los buffers y contadores (nueva sesión).
   void clear() {
     for (final buffer in _buffers.values) {

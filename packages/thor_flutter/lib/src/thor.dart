@@ -8,6 +8,7 @@ import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/error_capture.dart';
 import 'package:thor_flutter/src/interaction_capture.dart';
 import 'package:thor_flutter/src/navigator_observer.dart';
+import 'package:thor_flutter/src/performance_capture.dart';
 
 /// Fachada Flutter de Thor — la API que ve la app.
 ///
@@ -88,6 +89,7 @@ class Thor {
         // propio arranque los cubre la zona de todos modos.
         ErrorCapture.install();
         InteractionCapture.install();
+        PerformanceCapture.install();
         _watchLifecycle();
       },
       (error, stack) {
@@ -153,11 +155,51 @@ class Thor {
 }
 
 class _LifecycleWatcher with WidgetsBindingObserver {
+  Brightness? _lastBrightness;
+  double? _lastTextScale;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     ThorCore.instance?.recorder.record(ThorEventKind.environment, {
       'signal': 'lifecycle',
       'state': state.name,
+    });
+  }
+
+  /// El sistema avisa que anda corto de memoria — contexto oro cuando el
+  /// bug es "la app se cerró sola" (OOM kill inminente).
+  @override
+  void didHaveMemoryPressure() {
+    ThorCore.instance?.recorder.record(ThorEventKind.environment, {
+      'signal': 'memoryPressure',
+    });
+  }
+
+  /// Cambio de tema del sistema a media sesión — media clase de bugs de UI
+  /// son "solo en oscuro".
+  @override
+  void didChangePlatformBrightness() {
+    final value =
+        PlatformDispatcher.instance.platformBrightness.name;
+    if (value == _lastBrightness?.name) return;
+    _lastBrightness = PlatformDispatcher.instance.platformBrightness;
+    ThorCore.instance?.recorder.record(ThorEventKind.environment, {
+      'signal': 'brightness',
+      'value': value,
+    });
+  }
+
+  /// Cambio de escala de texto — el clásico "se desborda con letra grande".
+  @override
+  void didChangeMetrics() {
+    final views = PlatformDispatcher.instance.views;
+    if (views.isEmpty) return;
+    final scale = views.first.platformDispatcher.textScaleFactor;
+    if (scale == _lastTextScale) return;
+    _lastTextScale = scale;
+    ThorCore.instance?.recorder.record(ThorEventKind.environment, {
+      'signal': 'textScale',
+      'value': scale.toStringAsFixed(2),
     });
   }
 }

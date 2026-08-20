@@ -112,6 +112,7 @@ class ThorReport {
   static Map<String, Object?> _buildAggregates(List<ThorEvent> timeline) => {
         'networkByScreen': ThorAggregates.networkByScreen(timeline),
         'suspiciousDuplicates': ThorAggregates.suspiciousDuplicates(timeline),
+        'slowFramesByScreen': ThorAggregates.slowFramesByScreen(timeline),
         'errorGroups': ThorAggregates.errorGroups(timeline),
       };
 
@@ -167,6 +168,18 @@ class ThorReport {
       for (final d in dups.cast<Map<String, Object?>>()) {
         b.writeln('- ${d['key']} — ráfaga de ${d['maxBurst']}');
       }
+    }
+    final jank = aggregates['slowFramesByScreen']! as Map;
+    if (jank.isNotEmpty) {
+      b
+        ..writeln()
+        ..writeln('### Rendimiento (frames lentos)');
+      jank.forEach(
+        (screen, Object? stats) => b.writeln(
+          '- $screen: ${(stats! as Map)['slowFrames']} frames lentos, '
+          'peor ${(stats as Map)['worstMs']}ms',
+        ),
+      );
     }
     if (evicted.isNotEmpty) {
       b

@@ -66,6 +66,27 @@ class ThorAggregates {
     return result;
   }
 
+  /// Jank por pantalla: frames lentos acumulados y el peor frame. QA
+  /// reporta "va lento" sin evidencia; esto lo deja medido y ubicado.
+  static Map<String, Map<String, Object?>> slowFramesByScreen(
+    List<ThorEvent> timeline,
+  ) {
+    final result = <String, Map<String, Object?>>{};
+    for (final event in timeline) {
+      if (event.kind != ThorEventKind.performance) continue;
+      final screen = event.screen?.display ?? '(sin pantalla)';
+      final bucket = result.putIfAbsent(
+        screen,
+        () => {'slowFrames': 0, 'worstMs': 0},
+      );
+      bucket['slowFrames'] = (bucket['slowFrames']! as int) +
+          (event.payload['slowFrames'] as int? ?? 0);
+      final worst = event.payload['worstMs'] as int? ?? 0;
+      if (worst > (bucket['worstMs']! as int)) bucket['worstMs'] = worst;
+    }
+    return result;
+  }
+
   /// Errores agrupados por huella (tipo + origin + pantalla): el mismo bug
   /// no debe abrir cinco tickets.
   static List<Map<String, Object?>> errorGroups(List<ThorEvent> timeline) {
