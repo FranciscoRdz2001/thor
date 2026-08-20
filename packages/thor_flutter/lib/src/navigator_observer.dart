@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart' show CupertinoPageRoute;
 import 'package:flutter/material.dart' show MaterialPageRoute;
 import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/overlay/thor_overlay.dart';
 
 /// Observer universal de navegación.
 ///
@@ -31,6 +32,10 @@ class ThorNavigatorObserver extends NavigatorObserver {
 
   /// Controla el paso 2 de la cascada de resolución.
   final bool resolveWidgetClass;
+
+  /// Si el observer monta la burbuja del inspector al primer push.
+  /// Lo fija `Thor.run(showOverlay: ...)`; default apagado hasta el run.
+  static bool overlayEnabled = false;
 
   ThorCore? get _core => ThorCore.instance;
 
@@ -68,6 +73,13 @@ class ThorNavigatorObserver extends NavigatorObserver {
   }) {
     final core = _core;
     if (core == null) return; // Thor apagado = no-op, jamás error.
+
+    // Primer contacto con un Navigator vivo: montar la burbuja del
+    // inspector (integración cero — la app no agrega ningún widget).
+    final navigator = route.navigator;
+    if (overlayEnabled && navigator != null) {
+      ThorOverlayManager.ensureAttached(navigator);
+    }
 
     final screen = resolveScreen(route, tryBuilder: resolveWidgetClass);
     core.recorder.currentScreen = screen;

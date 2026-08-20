@@ -54,6 +54,7 @@ class Thor {
   static Future<void> run(
     FutureOr<void> Function() body, {
     bool enabled = kDebugMode,
+    bool showOverlay = true,
     Directory? storageDirectory,
     RedactionPolicy redaction = const RedactionPolicy.strict(),
     BufferQuotas? quotas,
@@ -65,6 +66,8 @@ class Thor {
       return;
     }
     _enabled = true;
+    // La burbuja del inspector la monta el observer al primer push.
+    ThorNavigatorObserver.overlayEnabled = showOverlay;
 
     // El cuerpo entero corre en la misma zona guardada: eso incluye
     // los errores async no capturados.

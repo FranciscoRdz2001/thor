@@ -29,16 +29,23 @@ class ThorRecorder {
   /// (o `Thor.setScreen` para navegación que el Navigator no ve).
   ScreenId? currentScreen;
 
-  /// Graba un evento de [kind] con [payload].
+  /// Silencio temporal: mientras es `true` no se graba nada. Lo usa el
+  /// inspector en pantalla — sus propias navegaciones y taps contaminarían
+  /// la línea de tiempo que está mostrando.
+  bool muted = false;
+
+  /// Graba un evento de [kind] con [payload]. Devuelve `null` si el
+  /// grabador está silenciado ([muted]).
   ///
   /// [origin] es el `archivo:línea` de la app que disparó el evento;
   /// [screenOverride] fuerza la pantalla (para eventos retro-corregidos).
-  ThorEvent record(
+  ThorEvent? record(
     ThorEventKind kind,
     Map<String, Object?> payload, {
     String? origin,
     ScreenId? screenOverride,
   }) {
+    if (muted) return null;
     final now = clock.now();
     final event = ThorEvent(
       seq: _seq++,
