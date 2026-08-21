@@ -21,4 +21,5 @@ export 'src/overlay/thor_overlay.dart' show ThorOverlayManager;
 export 'src/performance_capture.dart' show PerformanceCapture;
 export 'src/screenshot_capture.dart'
     show ThorScreenshot, ThorScreenshotBoundary;
+export 'src/semantics_capture.dart' show SemanticsInteractionCapture;
 export 'src/thor.dart';

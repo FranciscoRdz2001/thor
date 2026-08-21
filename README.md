@@ -29,6 +29,10 @@ patrones que un humano tardaría en ver:
   se intentó, y el usuario cree que ya quedó. Rompe el "sin errores" del
   veredicto a propósito.
 - **Captura de pantalla** automática al desbordarse un layout.
+- **Interacciones por accesibilidad**: un usuario con VoiceOver/TalkBack
+  activa botones por acción semántica, sin sintetizar toques — su sesión
+  salía sin un solo paso. (Solo cubre el camino del engine; un arnés que
+  llame `SemanticsOwner.performAction` en proceso queda fuera.)
 - **Test de reproducción**: `ThorReproTestBuilder.build(timeline)` emite el
   esqueleto del `integration_test` con los pasos exactos. Los valores de los
   campos y la aserción van marcados `TODO` — Thor sabe qué pasó, no qué

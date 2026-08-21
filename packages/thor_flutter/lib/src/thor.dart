@@ -10,6 +10,7 @@ import 'package:thor_flutter/src/error_capture.dart';
 import 'package:thor_flutter/src/interaction_capture.dart';
 import 'package:thor_flutter/src/navigator_observer.dart';
 import 'package:thor_flutter/src/performance_capture.dart';
+import 'package:thor_flutter/src/semantics_capture.dart';
 
 /// Fachada Flutter de Thor — la API que ve la app.
 ///
@@ -47,10 +48,18 @@ class Thor {
   /// Arranca la app con Thor instalado.
   ///
   /// - [enabled]: gate maestro. Con `false`, [body] corre tal cual.
-  /// - [storageDirectory]: dónde persistir journals. Si es `null`, Thor
-  ///   corre solo en memoria (la persistencia anti-crash queda apagada).
-  ///   La app normalmente pasa el directorio de soporte de la app
-  ///   (`path_provider` es decisión del caller — Thor no lo impone).
+  /// - [storageDirectory]: **función** que resuelve dónde persistir los
+  ///   journals; devolver `null` deja a Thor solo en memoria (sin
+  ///   persistencia anti-crash). Es función y no un `Directory` por una
+  ///   razón concreta: resolverlo suele necesitar `path_provider`, que
+  ///   necesita el binding — y si la app inicializa el binding ANTES de
+  ///   `run`, queda en una zona distinta a la del `runApp` de adentro. Ese
+  ///   *zone mismatch* rompe justo la configuración de zona de la que
+  ///   depende `Chain.capture` para reconstruir el `archivo:línea` a través
+  ///   de gaps async. Flutter lo avisa con una aserción de debug fácil de
+  ///   ignorar y el daño es silencioso. Thor la llama YA dentro de su zona
+  ///   y con el binding listo. `path_provider` sigue siendo decisión del
+  ///   caller: Thor no lo impone.
   /// - [appInfo] / [installId]: identidad para la cabecera de sesión.
   /// - [infraPackages]: paquetes propios que son infraestructura (tu SDK
   ///   de red, por ejemplo) y deben saltarse al resolver el
@@ -59,7 +68,7 @@ class Thor {
     FutureOr<void> Function() body, {
     bool enabled = kDebugMode,
     bool showOverlay = true,
-    Directory? storageDirectory,
+    FutureOr<Directory?> Function()? storageDirectory,
     RedactionPolicy redaction = const RedactionPolicy.strict(),
     BufferQuotas? quotas,
     String? installId,
@@ -88,9 +97,14 @@ class Thor {
     // proporcional a los await del arranque, no continuo.
     await runZonedGuarded(
       () => Chain.capture(() async {
+        // El binding se inicializa AQUÍ, dentro de la zona, para que sea la
+        // misma que la del runApp del body (ver [storageDirectory]).
         WidgetsFlutterBinding.ensureInitialized();
         await ThorCore.init(
-          storageDirectory: storageDirectory,
+          // Se resuelve después del binding: path_provider lo necesita.
+          // Si falla, Thor corre en memoria — un journal ausente nunca
+          // debe impedir que la app arranque.
+          storageDirectory: await _resolveDirectory(storageDirectory),
           redaction: redaction,
           quotas: quotas,
           installId: installId,
@@ -107,6 +121,9 @@ class Thor {
         // propio arranque los cubre la zona de todos modos.
         ErrorCapture.install();
         InteractionCapture.install();
+        // Los punteros no ven al lector de pantalla ni a los arneses de QA
+        // que manejan la app por el árbol semántico.
+        SemanticsInteractionCapture.install();
         PerformanceCapture.install();
         _watchLifecycle();
       }),
@@ -127,6 +144,20 @@ class Thor {
         // corrieron por su propio canal.
       },
     );
+  }
+
+  /// Resuelve el directorio de journals sin dejar que su fallo tumbe la
+  /// app: un canal de plataforma no disponible (tests, plataforma rara)
+  /// degrada a memoria, no a excepción durante el arranque.
+  static Future<Directory?> _resolveDirectory(
+    FutureOr<Directory?> Function()? resolver,
+  ) async {
+    if (resolver == null) return null;
+    try {
+      return await resolver();
+    } on Object {
+      return null;
+    }
   }
 
   /// Contexto del dispositivo sin plugins: lo que Flutter ya sabe.
