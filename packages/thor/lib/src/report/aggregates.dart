@@ -155,11 +155,19 @@ class ThorAggregates {
       }
     }
     final duration = timeline.last.atUtc.difference(timeline.first.atUtc);
+    // Una cola sin vaciar no es "sin errores": nada falló, pero el trabajo
+    // del usuario tampoco salió del dispositivo.
+    final stuck = stuckQueues(timeline);
+    final pending = stuck.fold<int>(
+      0,
+      (sum, q) => sum + (q['finalDepth']! as int),
+    );
     final parts = <String>[
       if (errors > 0) '$errors ${errors == 1 ? 'error' : 'errores'}',
       if (failedRequests > 0)
         '$failedRequests de $requests peticiones fallaron',
-      if (errors == 0 && failedRequests == 0) 'sin errores',
+      if (pending > 0) '$pending sin sincronizar',
+      if (errors == 0 && failedRequests == 0 && pending == 0) 'sin errores',
       '${screens.length} ${screens.length == 1 ? 'pantalla' : 'pantallas'}',
       _humanDuration(duration),
     ];
@@ -201,5 +209,54 @@ class ThorAggregates {
     }
     return groups.values.toList()
       ..sort((a, b) => (b['count']! as int).compareTo(a['count']! as int));
+  }
+
+  /// Colas de sincronización que terminaron la sesión SIN vaciarse.
+  ///
+  /// Es la firma de "guardé la orden y nunca subió": la app no falla, la
+  /// red no muestra error (nunca se intentó), y el usuario cree que ya
+  /// quedó. Solo se ve mirando la profundidad final contra el máximo.
+  /// Fail-closed: se reporta lo que NO llegó a cero, no se asume que
+  /// drenó.
+  static List<Map<String, Object?>> stuckQueues(List<ThorEvent> timeline) {
+    final byQueue = <String, List<ThorEvent>>{};
+    for (final event in timeline) {
+      if (event.kind != ThorEventKind.storage) continue;
+      if (event.payload['op'] != 'queue') continue;
+      final name = event.payload['queue'] as String?;
+      if (name == null) continue;
+      byQueue.putIfAbsent(name, () => []).add(event);
+    }
+
+    final result = <Map<String, Object?>>[];
+    for (final MapEntry(key: name, value: samples) in byQueue.entries) {
+      final depths = samples
+          .map((e) => e.payload['depth'])
+          .whereType<int>()
+          .toList();
+      if (depths.isEmpty) continue;
+      final finalDepth = depths.last;
+      if (finalDepth == 0) continue; // Drenó: no hay nada que reportar.
+
+      final maxDepth = depths.reduce((a, b) => a > b ? a : b);
+      // Desde el último cero (o el arranque) mide cuánto lleva atorada.
+      final lastDrainIndex = depths.lastIndexOf(0);
+      final since = samples[lastDrainIndex + 1 < samples.length
+              ? lastDrainIndex + 1
+              : samples.length - 1]
+          .atUtc;
+      result.add({
+        'queue': name,
+        'finalDepth': finalDepth,
+        'maxDepth': maxDepth,
+        'everDrained': lastDrainIndex >= 0,
+        'stuckForMs': samples.last.atUtc.difference(since).inMilliseconds,
+        'origin': samples.last.origin,
+      });
+    }
+    return result
+      ..sort(
+        (a, b) => (b['finalDepth']! as int).compareTo(a['finalDepth']! as int),
+      );
   }
 }

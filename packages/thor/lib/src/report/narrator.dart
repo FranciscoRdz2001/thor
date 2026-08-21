@@ -130,6 +130,18 @@ class ThorNarrator {
           final slow = event.payload['slowFrames'];
           final worst = event.payload['worstMs'];
           nested(event, '⚠ Jank: $slow frames lentos (peor ${worst}ms)');
+        case ThorEventKind.storage:
+          // Solo la cola entra en la narrativa: las escrituras sueltas son
+          // ruido, la profundidad es la que cuenta la historia.
+          if (event.payload['op'] == 'queue') {
+            final action = event.payload['action'];
+            nested(
+              event,
+              '· cola ${event.payload['queue']}: '
+              '${event.payload['depth']} pendientes'
+              '${action == null ? '' : ' ($action)'}',
+            );
+          }
       }
     }
     return lines.join('\n');

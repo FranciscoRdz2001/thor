@@ -27,6 +27,7 @@ class BufferQuotas {
             ThorEventKind.log: 200,
             ThorEventKind.environment: 100,
             ThorEventKind.performance: 100,
+            ThorEventKind.storage: 300,
           },
         );
 

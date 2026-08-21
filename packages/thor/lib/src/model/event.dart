@@ -29,6 +29,11 @@ enum ThorEventKind {
 
   /// Métrica de rendimiento (frames lentos, tormenta de rebuilds).
   performance,
+
+  /// Capa de datos local: escrituras/lecturas de preferencias o base
+  /// local y profundidad de colas de sincronización. Familia propia
+  /// porque es charlatana — no debe desalojar errores ni red.
+  storage,
 }
 
 /// Identidad de la pantalla activa en el momento de un evento.

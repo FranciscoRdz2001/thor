@@ -122,6 +122,7 @@ class ThorReport {
         'suspiciousDuplicates': ThorAggregates.suspiciousDuplicates(timeline),
         'slowFramesByScreen': ThorAggregates.slowFramesByScreen(timeline),
         'rageTaps': ThorAggregates.rageTaps(timeline),
+        'stuckQueues': ThorAggregates.stuckQueues(timeline),
         'verdict': ThorAggregates.verdict(timeline),
         'errorGroups': ThorAggregates.errorGroups(timeline),
       };
@@ -205,6 +206,21 @@ class ThorReport {
         b.writeln(
           '- «${r['target']}» ×${r['taps']} en ${r['withinMs']}ms '
           '(${r['screen'] ?? '?'})',
+        );
+      }
+    }
+    final stuck = aggregates['stuckQueues']! as List;
+    if (stuck.isNotEmpty) {
+      b
+        ..writeln()
+        ..writeln('### Colas sin vaciar');
+      for (final q in stuck.cast<Map<String, Object?>>()) {
+        final drained = q['everDrained'] == true
+            ? ''
+            : ' — nunca drenó en toda la sesión';
+        b.writeln(
+          '- `${q['queue']}`: ${q['finalDepth']} pendientes al cierre '
+          '(pico ${q['maxDepth']}, atorada ${q['stuckForMs']}ms)$drained',
         );
       }
     }
