@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:thor/thor.dart' hide originFromStack;
 import 'package:thor/thor.dart' as thor_core show originFromStack;
+import 'package:thor_flutter/src/screenshot_capture.dart';
 
 /// Instala la captura de errores componiendo con los handlers existentes.
 ///
@@ -53,6 +54,10 @@ class ErrorCapture {
       fatal: false,
       library: details.library,
     );
+    // Un desborde es EL caso donde la imagen vale más que el texto: se
+    // captura en cuanto ocurre, no al generar el reporte (para entonces la
+    // pantalla ya cambió).
+    if (isOverflow) ThorScreenshot.captureInBackground();
   }
 
   static void _record(

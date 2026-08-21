@@ -19,4 +19,6 @@ export 'src/overlay/report_share.dart'
     show ThorReportSharer, ThorShareOutcome;
 export 'src/overlay/thor_overlay.dart' show ThorOverlayManager;
 export 'src/performance_capture.dart' show PerformanceCapture;
+export 'src/screenshot_capture.dart'
+    show ThorScreenshot, ThorScreenshotBoundary;
 export 'src/thor.dart';

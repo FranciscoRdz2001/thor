@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/overlay/report_share.dart';
+import 'package:thor_flutter/src/screenshot_capture.dart';
 
 /// Inspector en pantalla: la vista Chucker-style de Thor, pero sobre la
 /// línea de tiempo completa — Red, Pasos de reproducción y Errores.
@@ -71,7 +72,13 @@ class ThorInspectorPage extends StatelessWidget {
   }
 
   Future<void> _shareReport(BuildContext context, ThorCore core) async {
-    final outcome = await ThorReportSharer.share(ThorReport.fromCore(core));
+    // La captura ya retenida (p.ej. del desborde) manda; si no hay, se
+    // toma una ahora. Ojo: aquí el inspector está encima, así que la del
+    // momento del fallo es más útil que la actual.
+    final shot = ThorScreenshot.latest;
+    final outcome = await ThorReportSharer.share(
+      ThorReport.fromCore(core, screenshotPng: shot),
+    );
     if (context.mounted && outcome == ThorShareOutcome.copiedToClipboard) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

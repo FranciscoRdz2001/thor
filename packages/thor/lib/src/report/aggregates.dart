@@ -87,6 +87,92 @@ class ThorAggregates {
     return result;
   }
 
+  /// Toques repetidos al mismo objetivo en ráfaga: señal de frustración
+  /// del usuario ("no responde") y casi siempre un bug — el botón no dio
+  /// feedback, o disparó doble. Sale gratis de los datos que ya hay.
+  static List<Map<String, Object?>> rageTaps(
+    List<ThorEvent> timeline, {
+    Duration window = const Duration(seconds: 2),
+    int minTaps = 3,
+  }) {
+    final result = <Map<String, Object?>>[];
+    final buffer = <ThorEvent>[];
+
+    void flush() {
+      if (buffer.length >= minTaps) {
+        result.add({
+          'target': buffer.first.payload['label'] ??
+              buffer.first.payload['widget'],
+          'screen': buffer.first.screen?.display,
+          'taps': buffer.length,
+          'withinMs': buffer.last.atUtc
+              .difference(buffer.first.atUtc)
+              .inMilliseconds,
+          'firstSeq': buffer.first.seq,
+        });
+      }
+      buffer.clear();
+    }
+
+    for (final event in timeline) {
+      if (event.kind != ThorEventKind.interaction) continue;
+      final sameTarget = buffer.isNotEmpty &&
+          buffer.last.payload['label'] == event.payload['label'] &&
+          buffer.last.payload['widget'] == event.payload['widget'] &&
+          event.atUtc.difference(buffer.last.atUtc) <= window;
+      if (!sameTarget) flush();
+      buffer.add(event);
+    }
+    flush();
+    return result;
+  }
+
+  /// Veredicto de una línea para encabezar el reporte: la conclusión
+  /// primero, para que un dev (o una IA) no tenga que deducirla leyendo
+  /// todos los pasos.
+  static String verdict(List<ThorEvent> timeline) {
+    if (timeline.isEmpty) return 'Sesión sin eventos.';
+    var errors = 0;
+    var failedRequests = 0;
+    var requests = 0;
+    final screens = <String>{};
+    for (final e in timeline) {
+      switch (e.kind) {
+        case ThorEventKind.error:
+          errors++;
+        case ThorEventKind.network:
+          requests++;
+          final status = e.payload['statusCode'];
+          if (e.payload['error'] != null ||
+              (status is int && status >= 400)) {
+            failedRequests++;
+          }
+        case ThorEventKind.navigation:
+          if (e.screen?.display != null) screens.add(e.screen!.display);
+        // ignore: no_default_cases — el resto no aporta al veredicto.
+        default:
+          break;
+      }
+    }
+    final duration = timeline.last.atUtc.difference(timeline.first.atUtc);
+    final parts = <String>[
+      if (errors > 0) '$errors ${errors == 1 ? 'error' : 'errores'}',
+      if (failedRequests > 0)
+        '$failedRequests de $requests peticiones fallaron',
+      if (errors == 0 && failedRequests == 0) 'sin errores',
+      '${screens.length} ${screens.length == 1 ? 'pantalla' : 'pantallas'}',
+      _humanDuration(duration),
+    ];
+    return parts.join(' · ');
+  }
+
+  static String _humanDuration(Duration d) {
+    if (d.inMinutes >= 1) {
+      return '${d.inMinutes}m ${d.inSeconds.remainder(60)}s';
+    }
+    return '${d.inSeconds}s';
+  }
+
   /// Errores agrupados por huella (tipo + origin + pantalla): el mismo bug
   /// no debe abrir cinco tickets.
   static List<Map<String, Object?>> errorGroups(List<ThorEvent> timeline) {

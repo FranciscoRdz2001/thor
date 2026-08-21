@@ -29,6 +29,7 @@ class ThorReport {
     required this.aggregates,
     required this.evicted,
     this.note,
+    this.screenshotPng,
   });
 
   /// Construye el reporte de la sesión ACTIVA.
@@ -38,6 +39,7 @@ class ThorReport {
     ThorCore core, {
     ThorReportOrigin origin = ThorReportOrigin.manual,
     String? note,
+    List<int>? screenshotPng,
   }) {
     final timeline = core.store.timeline();
     return ThorReport._(
@@ -54,6 +56,7 @@ class ThorReport {
           if (value > 0) key.name: value,
       },
       note: note,
+      screenshotPng: screenshotPng,
     );
   }
 
@@ -109,10 +112,17 @@ class ThorReport {
   /// Nota libre de QA.
   final String? note;
 
+  /// Captura de pantalla PNG del momento, si se tomó. Va como archivo
+  /// aparte (no dentro del JSON): una imagen en base64 infla el artefacto
+  /// y lo vuelve ilegible.
+  final List<int>? screenshotPng;
+
   static Map<String, Object?> _buildAggregates(List<ThorEvent> timeline) => {
         'networkByScreen': ThorAggregates.networkByScreen(timeline),
         'suspiciousDuplicates': ThorAggregates.suspiciousDuplicates(timeline),
         'slowFramesByScreen': ThorAggregates.slowFramesByScreen(timeline),
+        'rageTaps': ThorAggregates.rageTaps(timeline),
+        'verdict': ThorAggregates.verdict(timeline),
         'errorGroups': ThorAggregates.errorGroups(timeline),
       };
 
@@ -128,6 +138,7 @@ class ThorReport {
         'aggregates': aggregates,
         'context': context,
         'evicted': evicted,
+        if (screenshotPng != null) 'screenshot': '$reportId.png',
         'timeline': [for (final e in timeline) e.toJson()],
       };
 
@@ -136,6 +147,10 @@ class ThorReport {
   String toMarkdown() {
     final b = StringBuffer()
       ..writeln('## Reporte Thor `$reportId`')
+      ..writeln()
+      // La conclusión primero: quien lee (dev o IA) arranca por el
+      // veredicto, no deduciéndolo de los pasos.
+      ..writeln('**${aggregates['verdict']}**')
       ..writeln()
       ..writeln('- Origen: ${origin.name}')
       ..writeln('- Sesión: `${session.sessionId}` · '
@@ -181,6 +196,23 @@ class ThorReport {
         ),
       );
     }
+    final rage = aggregates['rageTaps']! as List;
+    if (rage.isNotEmpty) {
+      b
+        ..writeln()
+        ..writeln('### Toques repetidos (frustración)');
+      for (final r in rage.cast<Map<String, Object?>>()) {
+        b.writeln(
+          '- «${r['target']}» ×${r['taps']} en ${r['withinMs']}ms '
+          '(${r['screen'] ?? '?'})',
+        );
+      }
+    }
+    if (screenshotPng != null) {
+      b
+        ..writeln()
+        ..writeln('> Captura adjunta: `$reportId.png`');
+    }
     if (evicted.isNotEmpty) {
       b
         ..writeln()
@@ -194,9 +226,17 @@ class ThorReport {
   /// Devuelve el archivo. El JSON crudo nunca toca el disco sin comprimir.
   Future<File> writeTo(Directory dir) async {
     await dir.create(recursive: true);
+    final shot = screenshotPng;
+    if (shot != null) {
+      await File('${dir.path}/$reportId.png').writeAsBytes(shot, flush: true);
+    }
     final file = File('${dir.path}/$reportId.thor.json.gz');
     final bytes = gzip.encode(utf8.encode(jsonEncode(toJson())));
     await file.writeAsBytes(bytes, flush: true);
     return file;
   }
+
+  /// Ruta del PNG adjunto dentro de [dir], si el reporte trae captura.
+  File? screenshotFile(Directory dir) =>
+      screenshotPng == null ? null : File('${dir.path}/$reportId.png');
 }
