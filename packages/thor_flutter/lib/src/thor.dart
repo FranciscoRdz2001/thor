@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:stack_trace/stack_trace.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/error_capture.dart';
 import 'package:thor_flutter/src/interaction_capture.dart';
@@ -51,6 +52,9 @@ class Thor {
   ///   La app normalmente pasa el directorio de soporte de la app
   ///   (`path_provider` es decisión del caller — Thor no lo impone).
   /// - [appInfo] / [installId]: identidad para la cabecera de sesión.
+  /// - [infraPackages]: paquetes propios que son infraestructura (tu SDK
+  ///   de red, por ejemplo) y deben saltarse al resolver el
+  ///   `archivo:línea` de origen.
   static Future<void> run(
     FutureOr<void> Function() body, {
     bool enabled = kDebugMode,
@@ -60,19 +64,30 @@ class Thor {
     BufferQuotas? quotas,
     String? installId,
     Map<String, String> appInfo = const {},
+    Set<String> infraPackages = const {},
   }) async {
     if (!enabled) {
       await body();
       return;
     }
     _enabled = true;
+    // Paquetes propios de transporte (`mi_sdk`) que NO deben salir como
+    // origen: sin esto el archivo:línea apunta al interior del cliente HTTP
+    // y no a la pantalla/bloc que disparó la petición.
+    extraInfraPackages.addAll(infraPackages);
     // La burbuja del inspector la monta el observer al primer push.
     ThorNavigatorObserver.overlayEnabled = showOverlay;
 
     // El cuerpo entero corre en la misma zona guardada: eso incluye
     // los errores async no capturados.
+    //
+    // `Chain.capture` (dentro de la zona) es lo que permite reconstruir el
+    // origen archivo:línea a través de gaps asíncronos: sin él, una
+    // petición disparada desde un bloc pierde el frame de la app. El
+    // `when: true` lo mantiene también en release-QA; su costo es
+    // proporcional a los await del arranque, no continuo.
     await runZonedGuarded(
-      () async {
+      () => Chain.capture(() async {
         WidgetsFlutterBinding.ensureInitialized();
         await ThorCore.init(
           storageDirectory: storageDirectory,
@@ -94,7 +109,7 @@ class Thor {
         InteractionCapture.install();
         PerformanceCapture.install();
         _watchLifecycle();
-      },
+      }),
       (error, stack) {
         ThorCore.instance?.recorder.record(
           ThorEventKind.error,

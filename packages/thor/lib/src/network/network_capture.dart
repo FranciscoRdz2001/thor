@@ -87,9 +87,10 @@ class _SpyHttpClient implements HttpClient {
 
   @override
   Future<HttpClientRequest> openUrl(String method, Uri url) async {
-    // El stack se captura AQUÍ, en el momento del disparo: es el que
-    // contiene el frame de la app que originó la petición.
-    final origin = originFromStack(StackTrace.current);
+    // El origen se resuelve AQUÍ, en el disparo. `currentOrigin` atraviesa
+    // los gaps asíncronos (app → bloc → dio) cuando la zona captura la
+    // cadena — sin ella, `StackTrace.current` solo trae frames de dio.
+    final origin = currentOrigin(skipFrames: 2);
     final startedAt = clock.now();
     try {
       final request = await inner.openUrl(method, url);
