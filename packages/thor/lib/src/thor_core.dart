@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:clock/clock.dart';
@@ -146,51 +147,63 @@ class ThorCore {
   }
 
   String? _userId;
-  Map<String, Object?>? _userTraits;
+  Map<String, Object?>? _userProps;
 
   /// Usuario actual fijado con [setUser]; `null` = anónimo.
   String? get userId => _userId;
 
-  /// Rasgos del usuario actual, YA redactados.
-  Map<String, Object?>? get userTraits => _userTraits;
+  /// Datos adicionales del usuario actual (sin secretos).
+  Map<String, Object?>? get userProps => _userProps;
+
+  /// Tope de [setUser] `props` serializados: la identidad viaja con cada
+  /// sesión y no debe pesar más que el replay mismo.
+  static const maxUserPropsChars = 4096;
 
   /// Fija (o limpia con `null`) el usuario de la sesión — para buscar "la
   /// sesión del usuario X" cuando llega la queja.
   ///
-  /// [id] se guarda TAL CUAL: Thor no lo hashea ni lo transforma (un hash
-  /// silencioso haría imposible cruzarlo con el backend). Por eso la app
-  /// debe pasar un id OPACO (el id interno de cliente), nunca un email,
-  /// teléfono o nombre. Red de seguridad: un id con forma de email se
-  /// sustituye por [RedactionPolicy.redactedMarker] — viajaría en claro al
-  /// journal, al reporte y al servidor del replay. [traits] (plan, tienda,
-  /// rol…) sí pasan por la [RedactionPolicy]: solo quedan en claro las
-  /// claves de la allowlist.
+  /// [id] se guarda TAL CUAL (sin hash: hay que poder cruzarlo con el
+  /// backend). Debe ser OPACO (id interno de cliente): un id con forma de
+  /// email se sustituye por [RedactionPolicy.redactedMarker].
+  ///
+  /// [props] es JSON libre (mapas, listas, números, texto) con cualquier
+  /// dato que la app quiera ver al depurar: email, nombre, tienda, plan…
+  /// A diferencia de lo que Thor captura solo, esto lo manda la app A
+  /// PROPÓSITO, así que se guarda en claro — salvo las claves de secreto
+  /// (contraseña, token, tarjeta, CVV…), que nunca pasan. Lo que no es
+  /// JSON se convierte a texto; más de [maxUserPropsChars] se descarta
+  /// (queda `{"_truncated": true}`).
   ///
   /// Graba un evento de entorno `signal: 'user'` solo si algo cambió.
-  void setUser(String? id, {Map<String, String>? traits}) {
+  void setUser(String? id, {Map<String, Object?>? props}) {
     final safeId = id != null && _emailShaped.hasMatch(id)
         ? RedactionPolicy.redactedMarker
         : id;
-    final redacted = traits == null || traits.isEmpty
-        ? null
-        : redaction.redactValue(traits)! as Map<String, Object?>;
-    if (safeId == _userId && _sameTraits(redacted, _userTraits)) return;
+    final clean = _cleanProps(props);
+    if (safeId == _userId && _sameJson(clean, _userProps)) return;
     _userId = safeId;
-    _userTraits = redacted;
+    _userProps = clean;
     recorder.record(ThorEventKind.environment, {
       'signal': 'user',
       'id': safeId,
-      if (redacted != null) 'traits': redacted,
+      if (clean != null) 'props': clean,
     });
   }
 
-  static final _emailShaped = RegExp(r'[^\s@]+@[^\s@]+\.[^\s@]+');
-
-  static bool _sameTraits(Map<String, Object?>? a, Map<String, Object?>? b) {
-    if (a == null || b == null) return a == b;
-    if (a.length != b.length) return false;
-    return a.entries.every((e) => b[e.key] == e.value);
+  static Map<String, Object?>? _cleanProps(Map<String, Object?>? props) {
+    if (props == null || props.isEmpty) return null;
+    // Ida y vuelta por JSON: valida, y lo no serializable queda como texto.
+    final json = jsonEncode(
+      RedactionPolicy.redactSecrets(props),
+      toEncodable: (v) => v.toString(),
+    );
+    if (json.length > maxUserPropsChars) return {'_truncated': true};
+    return (jsonDecode(json) as Map).cast<String, Object?>();
   }
+
+  static bool _sameJson(Object? a, Object? b) => jsonEncode(a) == jsonEncode(b);
+
+  static final _emailShaped = RegExp(r'[^\s@]+@[^\s@]+\.[^\s@]+');
 
   /// Registra un proveedor de contexto de dominio bajo [key].
   void addContext(String key, ThorContextProvider provider) {

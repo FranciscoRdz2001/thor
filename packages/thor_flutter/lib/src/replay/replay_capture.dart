@@ -448,6 +448,7 @@ class ThorReplay {
       'dpr': view.devicePixelRatio,
       'app': _core.session.appInfo,
       if (_core.userId != null) 'uid': _core.userId,
+      if (_core.userProps != null) 'uprops': _core.userProps,
     });
     SchedulerBinding.instance.addPersistentFrameCallback(_onFrame);
     GestureBinding.instance.pointerRouter.addGlobalRoute(_onPointer);
@@ -660,10 +661,15 @@ class ThorReplay {
   void _onEvent(ThorEvent event) {
     final p = event.payload;
     // Identidad: registro propio (no `ev`) para que el servidor indexe
-    // "sesiones del usuario X" sin parsear eventos. Solo el id: los traits
-    // se quedan en el journal.
+    // "sesiones del usuario X" sin parsear eventos, con los props que la
+    // app mandó a propósito (ya sin secretos).
     if (event.kind == ThorEventKind.environment && p['signal'] == 'user') {
-      _writeJson({'t': 'user', 'ts': _ts, 'id': p['id']});
+      _writeJson({
+        't': 'user',
+        'ts': _ts,
+        'id': p['id'],
+        if (p['props'] != null) 'props': p['props'],
+      });
       return;
     }
     final slim = switch (event.kind) {

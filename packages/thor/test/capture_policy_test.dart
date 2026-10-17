@@ -271,12 +271,50 @@ void main() {
   group('ThorCore.setUser', () {
     tearDown(ThorCore.debugReset);
 
-    test('graba el cambio una vez, guarda el id tal cual y redacta traits',
+    test('props: JSON libre y anidado; los secretos nunca pasan', () async {
+      final core = await ThorCore.init();
+      core.setUser(
+        '1737154',
+        props: {
+          'email': 'mango1251@yahoo.com',
+          'tienda': {'id': 431, 'nombre': 'Centro'},
+          'pedidos': [1, 2, 3],
+          'vip': true,
+          'userPassword': 'hunter2',
+          'auth': {'accessToken': 'eyJ…', 'cvv': '123'},
+          'numeroTarjeta': '4111111111111111',
+          'cuando': DateTime.utc(2026, 10, 17),
+        },
+      );
+      final props = core.userProps!;
+      expect(props['email'], 'mango1251@yahoo.com');
+      expect(props['tienda'], {'id': 431, 'nombre': 'Centro'});
+      expect(props['pedidos'], [1, 2, 3]);
+      expect(props['vip'], true);
+      expect(props['userPassword'], RedactionPolicy.redactedMarker);
+      expect(props['auth'], {
+        'accessToken': RedactionPolicy.redactedMarker,
+        'cvv': RedactionPolicy.redactedMarker,
+      });
+      expect(props['numeroTarjeta'], RedactionPolicy.redactedMarker);
+      // Lo que no es JSON llega como texto, nunca rompe.
+      expect(props['cuando'], '2026-10-17 00:00:00.000Z');
+      await core.dispose();
+    });
+
+    test('props demasiado grandes no viajan', () async {
+      final core = await ThorCore.init();
+      core.setUser('u1', props: {'blob': 'x' * 5000});
+      expect(core.userProps, {'_truncated': true});
+      await core.dispose();
+    });
+
+    test('graba el cambio una vez, guarda el id y los props tal cual',
         () async {
       final core = await ThorCore.init();
       core
-        ..setUser('cli_8f2a', traits: {'plan': 'pro', 'status': 'activo'})
-        ..setUser('cli_8f2a', traits: {'plan': 'pro', 'status': 'activo'});
+        ..setUser('cli_8f2a', props: {'plan': 'pro', 'status': 'activo'})
+        ..setUser('cli_8f2a', props: {'plan': 'pro', 'status': 'activo'});
       final users = core.store
           .ofKind(ThorEventKind.environment)
           .where((e) => e.payload['signal'] == 'user')
@@ -284,10 +322,11 @@ void main() {
       expect(users, hasLength(1), reason: 'sin cambio no hay evento');
       expect(core.userId, 'cli_8f2a');
       expect(users.single.payload['id'], 'cli_8f2a');
-      final traits = users.single.payload['traits']! as Map;
-      // `plan` no está en la allowlist estricta; `status` sí.
-      expect(traits['plan'], RedactionPolicy.redactedMarker);
-      expect(traits['status'], 'activo');
+      // Los props los manda la app a propósito: en claro.
+      expect(
+        users.single.payload['props'],
+        {'plan': 'pro', 'status': 'activo'},
+      );
 
       core.setUser(null);
       expect(core.userId, isNull);

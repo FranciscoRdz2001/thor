@@ -205,15 +205,24 @@ class Thor {
   static void setScreen(String name) => ThorCore.instance?.setScreen(name);
 
   /// Fija (o limpia con `null`) el usuario de la sesión: queda en la línea
-  /// de tiempo, en el reporte y en el replay (`{"t":"user"}`).
+  /// de tiempo, en el reporte y en el replay (`{"t":"user"}`), y el
+  /// dashboard busca sesiones por él.
   ///
-  /// Pasa un id OPACO (tu id interno de cliente), nunca email/teléfono/
-  /// nombre: Thor lo guarda tal cual, sin hashear — transformarlo en
-  /// silencio impediría cruzarlo con tu backend. Un id con forma de email
-  /// se sustituye por el marcador de redactado. Los [traits] sí pasan por
-  /// la `RedactionPolicy` (solo claves de la allowlist quedan en claro).
-  static void setUser(String? id, {Map<String, String>? traits}) =>
-      ThorCore.instance?.setUser(id, traits: traits);
+  /// [id]: un id OPACO (tu id interno de cliente), guardado tal cual; uno
+  /// con forma de email se redacta. [props]: JSON libre con lo que quieras
+  /// ver al depurar a esa persona (email, nombre, tienda, plan…). Se guarda
+  /// en claro porque lo mandas a propósito, salvo claves de secreto
+  /// (contraseña, token, tarjeta…). Máximo ~4 KB.
+  ///
+  /// ```dart
+  /// Thor.setUser('1737154', props: {
+  ///   'email': user.email,
+  ///   'nombre': user.name,
+  ///   'tienda': {'id': 431, 'nombre': 'Centro'},
+  /// });
+  /// ```
+  static void setUser(String? id, {Map<String, Object?>? props}) =>
+      ThorCore.instance?.setUser(id, props: props);
 
   /// Registra un proveedor de contexto de dominio.
   static void addContext(String key, ThorContextProvider provider) =>

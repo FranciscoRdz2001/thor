@@ -77,6 +77,31 @@ class RedactionPolicy {
   static String _normalize(String key) =>
       key.toLowerCase().replaceAll('-', '_');
 
+  /// ¿Es una clave de SECRETO (contraseña, token, tarjeta…)? Va más allá
+  /// de [_hardDenied]: también atrapa variantes compuestas
+  /// (`userPassword`, `authToken`, `numeroTarjeta`).
+  static bool isSecretKey(String key) {
+    final k = _normalize(key);
+    return _hardDenied.contains(k) || _secretFragment.hasMatch(k);
+  }
+
+  static final _secretFragment = RegExp(
+    'password|contrase|secret|token|authorization|cookie|api_?key|cvv|cvc|'
+    'card_?number|tarjeta|private_?key',
+  );
+
+  /// Copia de [value] (JSON: mapas, listas, primitivos) donde el valor de
+  /// toda clave de secreto, a cualquier profundidad, es [redactedMarker].
+  /// Lo demás pasa tal cual: es para datos que la app manda A PROPÓSITO.
+  static Object? redactSecrets(Object? value) => switch (value) {
+        final Map<Object?, Object?> m => {
+            for (final MapEntry(:key, value: v) in m.entries)
+              '$key': isSecretKey('$key') ? redactedMarker : redactSecrets(v),
+          },
+        final List<Object?> l => [for (final v in l) redactSecrets(v)],
+        _ => value,
+      };
+
   /// ¿El valor de esta clave puede pasar en claro?
   bool isKeyAllowed(String key) {
     final k = _normalize(key);

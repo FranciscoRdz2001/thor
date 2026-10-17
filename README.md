@@ -42,10 +42,13 @@ patrones que un humano tardaría en ver:
   URL, status, duración y bytes (`lite: true`); las fallidas conservan
   headers, cuerpos y cURL. En memoria (inspector, cURL, reporte manual) todo
   sigue completo. `fullNetworkInJournal: true` lo desactiva.
-- **Identidad**: `Thor.setUser(id, traits:)` deja el usuario en la línea de
-  tiempo, el reporte y el replay. El id se guarda tal cual (pasa uno
-  opaco, nunca un email: uno con forma de email se sustituye por el
-  marcador de redactado); los traits pasan por la `RedactionPolicy`.
+- **Identidad**: `Thor.setUser(id, props: {...})` deja el usuario en la
+  línea de tiempo, el reporte y el replay, y el dashboard busca sesiones
+  por él. El id se guarda tal cual (pasa uno opaco; uno con forma de email
+  se redacta). `props` es JSON libre con lo que quieras ver al depurar a
+  esa persona (email, nombre, tienda…): se guarda en claro porque la app
+  lo manda a propósito, salvo claves de secreto (contraseña, token,
+  tarjeta, CVV), y con tope de ~4 KB.
 - **Test de reproducción**: `ThorReproTestBuilder.build(timeline)` emite el
   esqueleto del `integration_test` con los pasos exactos. Los valores de los
   campos y la aserción van marcados `TODO` — Thor sabe qué pasó, no qué

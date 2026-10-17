@@ -75,7 +75,7 @@ void main() {
     expect(resolverCalled, isFalse, reason: 'apagado = cero costo');
     expect(ThorCore.instance, isNull);
     // La fachada apagada es no-op, nunca error.
-    Thor.setUser('cli_1', traits: {'plan': 'pro'});
+    Thor.setUser('cli_1', props: {'plan': 'pro'});
     expect(ThorCore.instance, isNull);
   });
 
