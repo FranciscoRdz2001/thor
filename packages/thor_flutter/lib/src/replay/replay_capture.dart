@@ -25,6 +25,7 @@ class ThorReplayConfig {
     this.snapshotBudget = const Duration(milliseconds: 8),
     this.apiKey,
     this.unmaskedTexts = const {},
+    this.configEndpoint,
   });
 
   /// Enmascara todo el texto (default). Apagar solo en entornos propios.
@@ -53,6 +54,21 @@ class ThorReplayConfig {
   /// Llave de la app para la ingesta (header `x-thor-key`). El servidor
   /// rechaza sin ella (401) salvo en desarrollo.
   final String? apiKey;
+
+  /// Configuración bajo demanda (`POST`, JSON, opcional). Se le pregunta al
+  /// arrancar y cada vez que `Thor.setUser` cambia el usuario (una vez por
+  /// usuario por sesión) si un operador pidió el replay de este
+  /// usuario/sesión desde el dashboard: así se depura la queja de UN
+  /// cliente sin subir el 100% de las sesiones. Contesta
+  /// `{"upload": bool, "detail": bool, "until": …}`:
+  /// - `upload` — esta sesión sube completa, como si cayera en la muestra.
+  /// - `detail` — modo diagnóstico: las peticiones exitosas llevan cuerpos
+  ///   y headers (ya redactados, como las fallidas) y los logs van en todos
+  ///   los niveles.
+  ///
+  /// Un fallo (sin red, 500, JSON raro) se ignora: la sesión sigue con lo
+  /// que decidió la muestra. `null` = no se pregunta.
+  final Uri? configEndpoint;
 
   /// Fracción de sesiones que se suben siempre (0–1). El resto se graba
   /// en disco y solo se sube si pasa algo ([uploadOnError]).
@@ -127,6 +143,10 @@ class ThorReplayStats {
 ///   Un log (`k: "log"`) es `p.l` (marca de `Thor.mark`) o
 ///   `{lv, src, m, n?, err?, x?}` (línea de consola ya limpia; `x` = líneas
 ///   recortadas por ráfaga). Solo warn/error, salvo en modo diagnóstico.
+///   `{l: "report", reason?}` = el usuario tocó "Reportar problema"
+///   ([requestUpload]). Red (`k: "network"`): `{m, u, s, d}`; si falló,
+///   además `err`, `at` y `body`; en modo diagnóstico todas llevan `body`,
+///   `qb`, `qh`, `rh` (cuerpos y headers ya redactados).
 ///
 /// Subida en dos fases: se mandan los registros sin bloques; el servidor
 /// contesta `{"missing": [...]}` y solo esos bloques se mandan después.
@@ -147,9 +167,10 @@ class ThorReplay {
   bool _uploadEnabled;
 
   /// Modo diagnóstico: el replay lleva TODOS los logs (debug/info
-  /// incluidos), no solo warn/error. Hook para que el servidor lo encienda
-  /// por sesión/usuario cuando hay que perseguir un bug; por ahora solo se
-  /// fija desde aquí o en tests ([diagnostic]).
+  /// incluidos), no solo warn/error, y las peticiones exitosas con cuerpos
+  /// y headers. Lo enciende el servidor por sesión/usuario (`detail` de
+  /// [ThorReplayConfig.configEndpoint]) cuando hay que perseguir un bug;
+  /// nunca la app sola.
   bool _diagnostic = false;
 
   /// Enciende/apaga el modo diagnóstico (ver [_diagnostic]).
@@ -274,13 +295,15 @@ class ThorReplay {
       file = File('${directory.path}/replay-${core.session.sessionId}.jsonl');
     }
     // La subida del replay no es tráfico de la app.
-    if (config.endpoint case final endpoint?) {
-      ThorNetworkCapture.ignoredPrefixes.add(endpoint.toString());
+    for (final url in [config.endpoint, config.configEndpoint]) {
+      if (url != null) ThorNetworkCapture.ignoredPrefixes.add(url.toString());
     }
     final sampled = Random().nextDouble() < config.sampleRate;
     final replay =
         _instance = ThorReplay._(config, core, file, sampled).._install();
     if (sampled) replay._markEnabled();
+    // Sin await: el arranque de la app no espera a la red.
+    unawaited(replay._askConfig());
     if (directory != null && config.endpoint != null) {
       unawaited(_recover(directory, config.endpoint!, config.apiKey, file!));
     }
@@ -703,6 +726,7 @@ class ThorReplay {
         'id': p['id'],
         if (p['props'] != null) 'props': p['props'],
       });
+      _scheduleConfig();
       return;
     }
     final slim = switch (event.kind) {
@@ -731,11 +755,113 @@ class ThorReplay {
     // muestra: es justo la que hay que depurar.
     final failed = event.kind == ThorEventKind.error ||
         (event.kind == ThorEventKind.network && slim.containsKey('err'));
-    if (failed && _config.uploadOnError && !_uploadEnabled) {
-      _uploadEnabled = true;
-      _markEnabled();
-      unawaited(flush());
+    if (failed && _config.uploadOnError) _enableUpload();
+  }
+
+  /// Esta sesión pasa a subir COMPLETA (desde el inicio: [_pendingUpload]
+  /// guarda todo hasta que el servidor lo confirma). Marca `.on` para
+  /// recuperarla si la app muere, y sube ya.
+  void _enableUpload() {
+    if (_uploadEnabled || _rejected) return;
+    _uploadEnabled = true;
+    _markEnabled();
+    unawaited(flush());
+  }
+
+  /// El servidor rechazó la llave o la sesión (401/403): ni un error ni el
+  /// dashboard la reactivan — reintentar con la misma llave no sirve.
+  bool _rejected = false;
+
+  // ── Configuración bajo demanda ──
+
+  /// Usuarios por los que ya se preguntó en esta sesión ([_userKey]).
+  final Set<String> _askedConfig = {};
+  Timer? _configTimer;
+
+  /// Espera tras un `setUser` antes de preguntar: el login suele fijar el
+  /// id y luego los props en ráfaga; se pregunta una vez, con lo último.
+  @visibleForTesting
+  static Duration configDebounce = const Duration(milliseconds: 500);
+
+  /// Identidad para "una vez por usuario": el id, o los props si la app
+  /// solo manda props (el operador puede buscar por email).
+  String _userKey() =>
+      _core.userId ??
+      (_core.userProps == null ? '' : jsonEncode(_core.userProps));
+
+  void _scheduleConfig() {
+    if (_config.configEndpoint == null) return;
+    if (_askedConfig.contains(_userKey())) return;
+    _configTimer?.cancel();
+    _configTimer = Timer(configDebounce, () => unawaited(_askConfig()));
+  }
+
+  /// Pregunta a [ThorReplayConfig.configEndpoint] si alguien pidió esta
+  /// sesión. Nunca lanza ni bloquea: cualquier fallo deja todo como está.
+  Future<void> _askConfig() async {
+    final url = _config.configEndpoint;
+    if (url == null || _instance != this) return;
+    if (!_askedConfig.add(_userKey())) return;
+    try {
+      final req = await (_http ??= HttpClient())
+          .postUrl(url)
+          .timeout(const Duration(seconds: 15));
+      req.headers.contentType = ContentType.json;
+      if (_config.apiKey case final key?) req.headers.set('x-thor-key', key);
+      req.write(
+        jsonEncode({
+          'iid': _core.session.installId,
+          'sid': _core.session.sessionId,
+          'uid': _core.userId,
+          'props': _core.userProps,
+        }),
+      );
+      final res = await req.close().timeout(const Duration(seconds: 15));
+      final text = await res
+          .transform(utf8.decoder)
+          .join()
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200 || _instance != this) return;
+      final json = jsonDecode(text);
+      if (json is! Map) return;
+      // `detail` primero: lo que se suba ya va con el nivel pedido.
+      if (json['detail'] == true) _diagnostic = true;
+      if (json['upload'] == true) _enableUpload();
+    } on Object {
+      // Sin red, timeout o respuesta rara: la sesión sigue con la muestra.
     }
+  }
+
+  /// Para un botón "Reportar problema" en la app: esta sesión sube YA,
+  /// completa, con una marca `{"l":"report","reason":…}` en la línea de
+  /// tiempo para encontrar el momento. [reason] la escribe el usuario: se
+  /// limpia de datos personales y se recorta como cualquier log.
+  ///
+  /// Sin replay encendido es no-op. Normalmente completa cuando el intento
+  /// de subida terminó (haya llegado o no: lo que falte se reintenta como
+  /// siempre); si ya había una subida en curso, la nueva sale en cuanto
+  /// esa termine.
+  static Future<void> requestUpload({String? reason}) async {
+    final r = _instance;
+    if (r == null) return;
+    r._writeJson({
+      't': 'ev',
+      'ts': r._ts,
+      'k': ThorEventKind.log.name,
+      if (r._core.recorder.currentScreen case final screen?)
+        'sc': screen.display,
+      'p': {
+        'l': 'report',
+        if (reason != null && reason.isNotEmpty)
+          'reason': ThorCore.cleanLogText(reason, 500),
+      },
+    });
+    if (!r._uploadEnabled && !r._rejected) {
+      r
+        .._uploadEnabled = true
+        .._markEnabled();
+    }
+    await r.flush();
   }
 
   /// Tap: el label sigue la misma regla que el texto en pantalla.
@@ -795,6 +921,11 @@ class ThorReplay {
 
   /// Red: las exitosas solo con lo esencial; las fallidas conservan el
   /// cuerpo de respuesta (ya redactado) y el origen en código.
+  ///
+  /// En [_diagnostic] TODAS llevan además cuerpo de respuesta (`body`),
+  /// cuerpo de petición (`qb`) y headers (`qh`/`rh`) — tal como los dejó
+  /// la captura de red: ya pasados por [RedactionPolicy] (tokens, cookies,
+  /// claves de secreto fuera). Nada que no se mande hoy en un fallo.
   Map<String, Object?>? _slimNetwork(Map<String, Object?> p, String? at) {
     final url = (p['url'] as String?) ?? '';
     if (_staticAsset.hasMatch(url)) return null;
@@ -807,8 +938,13 @@ class ThorReplay {
       'd': p['durationMs'],
       if (failed) ...{
         'err': p['errorMessage'] ?? 'HTTP $status',
-        'body': p['responseBody'],
         'at': at,
+      },
+      if (failed || _diagnostic) 'body': p['responseBody'],
+      if (_diagnostic) ...{
+        if (p['requestBody'] != null) 'qb': p['requestBody'],
+        if (p['requestHeaders'] != null) 'qh': p['requestHeaders'],
+        if (p['responseHeaders'] != null) 'rh': p['responseHeaders'],
       },
     };
   }
@@ -865,7 +1001,11 @@ class ThorReplay {
     } else {
       _pendingDisk.clear();
     }
-    if (!upload || !_uploadEnabled || _pendingUpload.isEmpty || _uploading) {
+    if (!upload || !_uploadEnabled || _pendingUpload.isEmpty) return;
+    if (_uploading) {
+      // Una subida pedida YA (error, dashboard, "Reportar problema") no
+      // espera al siguiente ciclo: sale en cuanto termine la que va.
+      _uploadAgain = true;
       return;
     }
     // 429: el servidor pidió esperar.
@@ -900,6 +1040,7 @@ class ThorReplay {
           } else {
             // Llave o sesión rechazadas: esta sesión ya no sube.
             _uploadEnabled = false;
+            _rejected = true;
             _pendingUpload.clear();
             _unmarkEnabled();
           }
@@ -907,7 +1048,13 @@ class ThorReplay {
     } finally {
       _uploading = false;
     }
+    if (_uploadAgain) {
+      _uploadAgain = false;
+      await flush();
+    }
   }
+
+  bool _uploadAgain = false;
 
   final Set<String> _savedBlocks = {};
   Iterable<String> get _unsavedBlocks =>
@@ -920,6 +1067,7 @@ class ThorReplay {
     _instance = null;
     r._idleTimer?.cancel();
     r._flushTimer?.cancel();
+    r._configTimer?.cancel();
     r._unsubscribe?.call();
     WidgetsBinding.instance.removeObserver(r._lifecycle);
     GestureBinding.instance.pointerRouter.removeGlobalRoute(r._onPointer);
