@@ -100,4 +100,23 @@ void main() {
       expect(RedactionPolicy.personalMarker('orders'), isNull);
     });
   });
+  test('scrubText es lineal: líneas largas no congelan el hilo de UI', () {
+    // Antes: ~2.4 s para la primera (retroceso catastrófico en el par
+    // clave=valor) y ~35 ms para la segunda (email cuadrático).
+    final inputs = [
+      List.filled(400, 'token').join('-'),
+      'a' * 2000,
+      List.filled(1000, 'a').join('-'),
+    ];
+    final watch = Stopwatch()..start();
+    for (final s in inputs) {
+      RedactionPolicy.scrubText(s);
+    }
+    expect(watch.elapsedMilliseconds, lessThan(200));
+    // Una clave cualquiera no esconde el secreto que viene después.
+    expect(
+      RedactionPolicy.scrubSecrets('see https://h/p?token=abc123'),
+      'see https://h/p?token=${RedactionPolicy.redactedMarker}',
+    );
+  });
 }

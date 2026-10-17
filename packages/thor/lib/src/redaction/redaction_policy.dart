@@ -129,7 +129,10 @@ class RedactionPolicy {
     return null;
   }
 
-  static final _emailIn = RegExp(r'[^\s@]+@[^\s@]+');
+  // Lookbehind: un intento por corrida de texto, no uno por carácter. Sin
+  // él, una línea larga sin espacios ni `@` es cuadrática (decenas de ms
+  // por `print` en el hilo de UI).
+  static final _emailIn = RegExp(r'(?<![^\s@])[^\s@]+@[^\s@]+');
   static final _numberIn = RegExp(r'\+?\d[\d\-. ]*\d');
   static final _longWord = RegExp(r'\S{20,}');
 
@@ -157,17 +160,22 @@ class RedactionPolicy {
   // `clave=valor`, `clave: valor`, `"clave": "valor"` (JSON, query,
   // headers, toString de mapas). El valor puede traer esquema de auth
   // (`Authorization: Bearer x`): se conserva el esquema, cae el token.
-  // La clave candidata ya debe traer un fragmento de secreto: con una
-  // clave cualquiera, `https://h/p?token=x` se comería como UN par
-  // (`https` : `//h/p?token=x`) y el token pasaría.
-  static final _secretPair = RegExp(
-    r'''(["']?)\b((?:[\w\-]*?(?:password|contrase|secret|token|'''
-    r'''authorization|cookie|api[_\-]?key|cvv|cvc|card[_\-]?number|tarjeta|'''
-    r'''private[_\-]?key)[\wñÑ\-]*)|pin)\1(\s*[:=]\s*)'''
-    r'''(?:(Bearer|Basic|Token)\s+)?'''
-    r'''("(?:[^"\\]|\\.)*"|'[^']*'|[^\s,;&)}\]"']+)''',
+  //
+  // Dos pasos y lineal a propósito: la regex solo halla `clave` +
+  // separador (una vez por palabra, por el lookbehind) y [isSecretKey]
+  // decide; el valor se lee después con [_pairValue] SOLO si la clave es
+  // de secreto. Así una clave cualquiera no se come su valor —en
+  // `https://h/p?token=x`, `https:` no esconde el `token=x`— y no hay
+  // retroceso catastrófico: la versión con el fragmento de secreto dentro
+  // de la regex tardaba segundos en un `print` de 2000 caracteres con
+  // guiones, en el hilo de UI.
+  static final _pairKey = RegExp(
+    r"""(?<![\w\-ñÑ])(["']?)([\w\-ñÑ]+)\1(\s*[:=]\s*)"""
+    r'(?:(Bearer|Basic|Token)\s+)?',
     caseSensitive: false,
   );
+  static final _pairValue =
+      RegExp(r"""("(?:[^"\\]|\\.)*"|'[^']*'|[^\s,;&)}\]"']+)""");
   static final _bearer =
       RegExp(r'\b(Bearer)\s+[A-Za-z0-9\-._~+/]{8,}=*', caseSensitive: false);
   static final _basic = RegExp(r'\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})');
@@ -178,22 +186,35 @@ class RedactionPolicy {
   /// tokens de `Bearer …` / `Basic …` sueltos se vuelven
   /// [redactedMarker]. Para texto libre (logs, labels) donde no hay mapa
   /// que pasar por la allowlist.
-  static String scrubSecrets(String text) => text
-      .replaceAllMapped(_secretPair, (m) {
-        final key = m[2]!;
-        if (!isSecretKey(key)) return m[0]!;
-        final value = m[5]!;
-        final quote =
-            value.startsWith('"') || value.startsWith("'") ? value[0] : '';
-        final scheme = m[4] == null ? '' : '${m[4]} ';
-        return '${m[1]}$key${m[1]}${m[3]}$scheme$quote$redactedMarker$quote';
-      })
+  static String scrubSecrets(String text) => _scrubPairs(text)
       .replaceAllMapped(_bearer, (m) => '${m[1]} $redactedMarker')
       // "Basic" es palabra común: solo si lo que sigue parece base64.
       .replaceAllMapped(
         _basic,
         (m) => _base64Hint.hasMatch(m[1]!) ? 'Basic $redactedMarker' : m[0]!,
       );
+
+  static String _scrubPairs(String text) {
+    StringBuffer? out;
+    var last = 0;
+    for (final m in _pairKey.allMatches(text)) {
+      if (m.start < last) continue;
+      final key = m[2]!;
+      if (!isSecretKey(key)) continue;
+      final v = _pairValue.matchAsPrefix(text, m.end);
+      if (v == null) continue;
+      final value = v[0]!;
+      final quote =
+          value.startsWith('"') || value.startsWith("'") ? value[0] : '';
+      final scheme = m[4] == null ? '' : '${m[4]} ';
+      (out ??= StringBuffer())
+        ..write(text.substring(last, m.start))
+        ..write('${m[1]}$key${m[1]}${m[3]}$scheme$quote$redactedMarker$quote');
+      last = v.end;
+    }
+    if (out == null) return text;
+    return (out..write(text.substring(last))).toString();
+  }
 
   /// ¿El valor de esta clave puede pasar en claro?
   bool isKeyAllowed(String key) {
