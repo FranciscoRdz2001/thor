@@ -51,6 +51,7 @@ class SessionJournal {
     this.flushInterval = const Duration(seconds: 2),
     this.flushThreshold = 25,
     this.maxSessions = 10,
+    this.fullNetworkOnSuccess = false,
   });
 
   /// Directorio raíz de journals (privado de la app).
@@ -68,6 +69,13 @@ class SessionJournal {
   /// Sesiones antiguas a conservar; el resto se purga en [start] (nadie
   /// quiere el SDK que llenó el disco del dispositivo).
   final int maxSessions;
+
+  /// Si las peticiones EXITOSAS se escriben completas. Por defecto no:
+  /// headers, bodies y cURL de una petición que salió bien pesaban ~2.7 KB
+  /// por evento y no explican ningún bug; la versión ligera conserva lo
+  /// que sí sirve (método, URL, status, duración, bytes). Las fallidas se
+  /// escriben siempre completas — ahí el cuerpo ES la causa.
+  final bool fullNetworkOnSuccess;
 
   static const _sessionPrefix = 'thor-';
   static const _sessionSuffix = '.jsonl';
@@ -100,12 +108,40 @@ class SessionJournal {
   /// que el evento que explica por qué ya esté en disco.
   void append(ThorEvent event, {bool urgent = false}) {
     if (_closed || _sink == null) return;
-    _pending.add(jsonEncode({'type': 'event', ...event.toJson()}));
+    final json = event.toJson();
+    if (!fullNetworkOnSuccess && event.kind == ThorEventKind.network) {
+      json['payload'] = lightNetworkPayload(event.payload);
+    }
+    _pending.add(jsonEncode({'type': 'event', ...json}));
     if (urgent || _pending.length >= flushThreshold) {
       unawaited(flush());
     } else {
       _flushTimer ??= Timer(flushInterval, () => unawaited(flush()));
     }
+  }
+
+  /// Claves que sobreviven en una petición exitosa aligerada.
+  static const _lightNetworkKeys = {
+    'method',
+    'url',
+    'statusCode',
+    'durationMs',
+    'requestBytes',
+    'responseBytes',
+  };
+
+  /// Versión ligera de un payload de red: las exitosas se quedan con lo
+  /// esencial y `lite: true` (para que nadie lea la ausencia de headers
+  /// como "no hubo headers"); las fallidas pasan intactas.
+  static Map<String, Object?> lightNetworkPayload(Map<String, Object?> p) {
+    final status = p['statusCode'];
+    final failed = p['error'] != null || status is! int || status >= 400;
+    if (failed) return p;
+    return {
+      for (final MapEntry(:key, :value) in p.entries)
+        if (_lightNetworkKeys.contains(key)) key: value,
+      'lite': true,
+    };
   }
 
   Future<void> _flushChain = Future<void>.value();

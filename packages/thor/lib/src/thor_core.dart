@@ -10,6 +10,7 @@ import 'package:thor/src/network/raw_network_store.dart';
 import 'package:thor/src/persistence/journal.dart';
 import 'package:thor/src/recorder.dart';
 import 'package:thor/src/redaction/redaction_policy.dart';
+import 'package:thor/src/store/capture_policy.dart';
 import 'package:thor/src/store/event_store.dart';
 
 /// Proveedor de contexto de dominio: se llama al generar un reporte para
@@ -66,6 +67,8 @@ class ThorCore {
   ///   `null` = solo memoria.
   /// - [installId]: identificador de instalación persistente; el adaptador
   ///   de Flutter lo provee. Si falta, se genera uno efímero.
+  /// - [capture]: topes de ráfagas de estado y aligerado de red en el
+  ///   journal (ver [ThorCapturePolicy]).
   static Future<ThorCore> init({
     Directory? storageDirectory,
     RedactionPolicy redaction = const RedactionPolicy.strict(),
@@ -73,6 +76,7 @@ class ThorCore {
     String? installId,
     Map<String, String> appInfo = const {},
     Map<String, String> deviceInfo = const {},
+    ThorCapturePolicy capture = const ThorCapturePolicy(),
   }) async {
     final existing = _instance;
     if (existing != null) return existing;
@@ -87,7 +91,7 @@ class ThorCore {
       deviceInfo: deviceInfo,
     );
     final store = EventStore(quotas: quotas);
-    final recorder = ThorRecorder(store: store);
+    final recorder = ThorRecorder(store: store, policy: capture);
 
     SessionJournal? journal;
     RecoveredSession? recovered;
@@ -95,7 +99,11 @@ class ThorCore {
       // Primero mirar si la sesión anterior murió sin cerrar…
       recovered = await SessionJournal.recoverPrevious(storageDirectory);
       // …y luego abrir el journal propio.
-      journal = SessionJournal(directory: storageDirectory, session: session);
+      journal = SessionJournal(
+        directory: storageDirectory,
+        session: session,
+        fullNetworkOnSuccess: capture.fullNetworkInJournal,
+      );
       await journal.start();
     }
 
@@ -137,6 +145,45 @@ class ThorCore {
     });
   }
 
+  String? _userId;
+  Map<String, Object?>? _userTraits;
+
+  /// Usuario actual fijado con [setUser]; `null` = anónimo.
+  String? get userId => _userId;
+
+  /// Rasgos del usuario actual, YA redactados.
+  Map<String, Object?>? get userTraits => _userTraits;
+
+  /// Fija (o limpia con `null`) el usuario de la sesión — para buscar "la
+  /// sesión del usuario X" cuando llega la queja.
+  ///
+  /// [id] se guarda TAL CUAL: Thor no lo hashea ni lo transforma (un hash
+  /// silencioso haría imposible cruzarlo con el backend). Por eso la app
+  /// debe pasar un id OPACO (el id interno de cliente), nunca un email,
+  /// teléfono o nombre. [traits] (plan, tienda, rol…) sí pasan por la
+  /// [RedactionPolicy]: solo quedan en claro las claves de la allowlist.
+  ///
+  /// Graba un evento de entorno `signal: 'user'` solo si algo cambió.
+  void setUser(String? id, {Map<String, String>? traits}) {
+    final redacted = traits == null || traits.isEmpty
+        ? null
+        : redaction.redactValue(traits)! as Map<String, Object?>;
+    if (id == _userId && _sameTraits(redacted, _userTraits)) return;
+    _userId = id;
+    _userTraits = redacted;
+    recorder.record(ThorEventKind.environment, {
+      'signal': 'user',
+      'id': id,
+      if (redacted != null) 'traits': redacted,
+    });
+  }
+
+  static bool _sameTraits(Map<String, Object?>? a, Map<String, Object?>? b) {
+    if (a == null || b == null) return a == b;
+    if (a.length != b.length) return false;
+    return a.entries.every((e) => b[e.key] == e.value);
+  }
+
   /// Registra un proveedor de contexto de dominio bajo [key].
   void addContext(String key, ThorContextProvider provider) {
     _contextProviders[key] = provider;
@@ -161,6 +208,9 @@ class ThorCore {
   Future<void> dispose() async {
     // Los cURLs crudos son de ESTA sesión: mueren con ella.
     RawNetworkStore.clear();
+    // Los conteos de ráfagas abiertas se escriben antes del cierre: son
+    // hallazgo, no ruido.
+    recorder.flushBursts();
     _unsubscribeJournal?.call();
     await journal?.close();
     if (identical(_instance, this)) _instance = null;

@@ -18,6 +18,7 @@ export 'src/report/report.dart';
 export 'src/report/repro_test_builder.dart';
 export 'src/report/session_diff.dart';
 export 'src/storage/storage_capture.dart';
+export 'src/store/capture_policy.dart';
 export 'src/store/event_store.dart';
 export 'src/thor_core.dart';
 export 'src/util/origin.dart';

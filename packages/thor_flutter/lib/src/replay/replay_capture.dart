@@ -98,6 +98,9 @@ class ThorReplayStats {
 ///   tiene** (de esta u otra sesión, de este u otro dispositivo).
 /// - `["sc", ts, vp, offset]` — scroll (~10 Hz mientras se mueve).
 /// - `["p", ts, "d"|"m"|"u", x, y]` — dedo.
+/// - `{"t":"user","ts":…,"id":…}` — usuario fijado/cambiado con
+///   `Thor.setUser` (`id: null` = se limpió). Si ya se conocía al
+///   arrancar, también va como `uid` en el meta.
 /// - `{"t":"ev",…}` — evento de Thor en versión ligera.
 ///
 /// Subida en dos fases: se mandan los registros sin bloques; el servidor
@@ -389,6 +392,7 @@ class ThorReplay {
       'h': size.height,
       'dpr': view.devicePixelRatio,
       'app': _core.session.appInfo,
+      if (_core.userId != null) 'uid': _core.userId,
     });
     SchedulerBinding.instance.addPersistentFrameCallback(_onFrame);
     GestureBinding.instance.pointerRouter.addGlobalRoute(_onPointer);
@@ -600,6 +604,13 @@ class ThorReplay {
 
   void _onEvent(ThorEvent event) {
     final p = event.payload;
+    // Identidad: registro propio (no `ev`) para que el servidor indexe
+    // "sesiones del usuario X" sin parsear eventos. Solo el id: los traits
+    // se quedan en el journal.
+    if (event.kind == ThorEventKind.environment && p['signal'] == 'user') {
+      _writeJson({'t': 'user', 'ts': _ts, 'id': p['id']});
+      return;
+    }
     final slim = switch (event.kind) {
       ThorEventKind.navigation => {'a': p['action'], 'to': p['to']},
       ThorEventKind.interaction => {

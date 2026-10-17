@@ -3,7 +3,9 @@ import 'dart:math';
 import 'package:clock/clock.dart';
 
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/store/capture_policy.dart';
 import 'package:thor/src/store/event_store.dart';
+import 'package:thor/src/util/failure_name.dart';
 
 /// Firma de un listener de eventos recién grabados (persistencia, overlay,
 /// MCP se cuelgan aquí).
@@ -17,13 +19,28 @@ typedef ThorEventListener = void Function(ThorEvent event);
 /// pantalla activa, UTC+offset) sea consistente en toda la línea de tiempo.
 class ThorRecorder {
   /// Crea un grabador sobre [store].
-  ThorRecorder({required this.store});
+  ///
+  /// [policy] fija el tope de ráfagas de estado; el default es el
+  /// recomendado ([ThorCapturePolicy]).
+  ThorRecorder({
+    required this.store,
+    ThorCapturePolicy policy = const ThorCapturePolicy(),
+  }) : _stateBursts = policy.stateBurstLimit <= 0
+            ? null
+            : BurstLimiter(
+                limit: policy.stateBurstLimit,
+                window: policy.stateBurstWindow,
+                summaryEvery: policy.burstSummaryEvery,
+              );
 
   /// Almacén en memoria de la sesión.
   final EventStore store;
 
   final List<ThorEventListener> _listeners = [];
   int _seq = 0;
+
+  /// Tope de ráfagas de estado por bloc+acción; `null` = sin tope.
+  final BurstLimiter? _stateBursts;
 
   /// Pantalla activa. La mantienen los adaptadores de navegación
   /// (o `Thor.setScreen` para navegación que el Navigator no ve).
@@ -43,7 +60,9 @@ class ThorRecorder {
   };
 
   /// Graba un evento de [kind] con [payload]. Devuelve `null` si el
-  /// grabador está silenciado ([muted]) y la familia es silenciable.
+  /// grabador está silenciado ([muted]) y la familia es silenciable, o si
+  /// es un evento de estado recortado por el tope de ráfagas (queda
+  /// contado en un resumen `action: 'burst'`).
   ///
   /// [origin] es el `archivo:línea` de la app que disparó el evento;
   /// [screenOverride] fuerza la pantalla (para eventos retro-corregidos).
@@ -55,12 +74,33 @@ class ThorRecorder {
   }) {
     if (muted && _mutedKinds.contains(kind)) return null;
     final now = clock.now();
+    final bursts = _stateBursts;
+    if (bursts != null) {
+      // Los resúmenes vencidos salen ANTES del evento que los destapa:
+      // así la línea de tiempo queda en orden.
+      if (bursts.hasPending) _emitBurstSummaries(bursts.due(now), now);
+      if (kind == ThorEventKind.state &&
+          !_exemptFromBurst(payload) &&
+          !bursts.allow('${payload['bloc']}|${payload['action']}', now)) {
+        return null;
+      }
+    }
+    return _emit(kind, payload, now, origin: origin, screen: screenOverride);
+  }
+
+  ThorEvent _emit(
+    ThorEventKind kind,
+    Map<String, Object?> payload,
+    DateTime now, {
+    String? origin,
+    ScreenId? screen,
+  }) {
     final event = ThorEvent(
       seq: _seq++,
       kind: kind,
       atUtc: now.toUtc(),
       utcOffset: now.timeZoneOffset,
-      screen: screenOverride ?? currentScreen,
+      screen: screen ?? currentScreen,
       origin: origin,
       payload: payload,
     );
@@ -70,6 +110,47 @@ class ThorRecorder {
       listener(event);
     }
     return event;
+  }
+
+  /// Una transición HACIA un estado de fallo nunca se recorta: es la línea
+  /// de estado que explica el bug, aunque el bloc sea charlatán.
+  static bool _exemptFromBurst(Map<String, Object?> payload) {
+    final to = switch (payload['to']) {
+      final String s => s,
+      final Map<Object?, Object?> m => m['type'],
+      _ => null,
+    };
+    return to is String && looksLikeFailureName(to);
+  }
+
+  void _emitBurstSummaries(List<BurstSummary> summaries, DateTime now) {
+    final limiter = _stateBursts!;
+    for (final s in summaries) {
+      final sep = s.key.lastIndexOf('|');
+      _emit(
+        ThorEventKind.state,
+        {
+          'bloc': s.key.substring(0, sep),
+          'action': 'burst',
+          'burstOf': s.key.substring(sep + 1),
+          'dropped': s.dropped,
+          'limit': limiter.limit,
+          'windowMs': limiter.window.inMilliseconds,
+          'spanMs': s.lastDropAt.difference(s.firstDropAt).inMilliseconds,
+        },
+        now,
+      );
+    }
+  }
+
+  /// Emite ya los resúmenes de ráfagas pendientes (aunque la ráfaga siga
+  /// abierta). Se llama antes de un reporte y al cerrar la sesión: un
+  /// conteo de descartes que nunca se escribe es un hallazgo perdido.
+  void flushBursts() {
+    final bursts = _stateBursts;
+    if (bursts == null || !bursts.hasPending) return;
+    final now = clock.now();
+    _emitBurstSummaries(bursts.due(now, all: true), now);
   }
 
   /// Suscribe un [listener] a todo evento grabado. Devuelve la función que

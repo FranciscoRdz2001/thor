@@ -41,6 +41,9 @@ class ThorReport {
     String? note,
     List<int>? screenshotPng,
   }) {
+    // Las ráfagas abiertas se declaran ANTES de fotografiar la línea de
+    // tiempo: si no, el reporte calla justo el conteo de lo recortado.
+    core.recorder.flushBursts();
     final timeline = core.store.timeline();
     return ThorReport._(
       reportId: generateThorId(),
@@ -122,6 +125,8 @@ class ThorReport {
         'suspiciousDuplicates': ThorAggregates.suspiciousDuplicates(timeline),
         'slowFramesByScreen': ThorAggregates.slowFramesByScreen(timeline),
         'rageTaps': ThorAggregates.rageTaps(timeline),
+        'noisyBlocs': ThorAggregates.noisyBlocs(timeline),
+        'userId': ThorAggregates.lastUserId(timeline),
         'stuckQueues': ThorAggregates.stuckQueues(timeline),
         'verdict': ThorAggregates.verdict(timeline),
         'errorGroups': ThorAggregates.errorGroups(timeline),
@@ -158,6 +163,8 @@ class ThorReport {
           'instalación `${session.installId}`')
       ..writeln('- App: ${session.appInfo}')
       ..writeln('- Dispositivo: ${session.deviceInfo}');
+    final userId = aggregates['userId'];
+    if (userId != null) b.writeln('- Usuario: `$userId`');
     if (note != null) b.writeln('- Nota de QA: $note');
     b
       ..writeln()
@@ -209,15 +216,27 @@ class ThorReport {
         );
       }
     }
+    final noisy = aggregates['noisyBlocs']! as List;
+    if (noisy.isNotEmpty) {
+      b
+        ..writeln()
+        ..writeln('### Blocs ruidosos (ráfagas recortadas)');
+      for (final n in noisy.cast<Map<String, Object?>>()) {
+        b.writeln(
+          '- ${n['bloc']} `${n['action']}`: ${n['dropped']} recortados, '
+          '${n['kept']} conservados'
+          '${n['screen'] == null ? '' : ' (${n['screen']})'}',
+        );
+      }
+    }
     final stuck = aggregates['stuckQueues']! as List;
     if (stuck.isNotEmpty) {
       b
         ..writeln()
         ..writeln('### Colas sin vaciar');
       for (final q in stuck.cast<Map<String, Object?>>()) {
-        final drained = q['everDrained'] == true
-            ? ''
-            : ' — nunca drenó en toda la sesión';
+        final drained =
+            q['everDrained'] == true ? '' : ' — nunca drenó en toda la sesión';
         b.writeln(
           '- `${q['queue']}`: ${q['finalDepth']} pendientes al cierre '
           '(pico ${q['maxDepth']}, atorada ${q['stuckForMs']}ms)$drained',

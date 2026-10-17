@@ -33,6 +33,18 @@ patrones que un humano tardaría en ver:
   activa botones por acción semántica, sin sintetizar toques — su sesión
   salía sin un solo paso. (Solo cubre el camino del engine; un arnés que
   llame `SemanticsOwner.performAction` en proceso queda fuera.)
+- **Blocs ruidosos**: un bloc que emite un estado por scroll se recorta a
+  `ThorCapturePolicy.stateBurstLimit` eventos/s por bloc+acción (default 3),
+  pero lo descartado se cuenta en un evento `action: 'burst'` y el reporte
+  lo lista — el spam ES el hallazgo. Una transición a un estado de fallo
+  nunca se recorta.
+- **Journal ligero**: las peticiones exitosas van a disco solo con método,
+  URL, status, duración y bytes (`lite: true`); las fallidas conservan
+  headers, cuerpos y cURL. En memoria (inspector, cURL, reporte manual) todo
+  sigue completo. `fullNetworkInJournal: true` lo desactiva.
+- **Identidad**: `Thor.setUser(id, traits:)` deja el usuario en la línea de
+  tiempo, el reporte y el replay. El id se guarda tal cual (pasa uno
+  opaco, nunca un email); los traits pasan por la `RedactionPolicy`.
 - **Test de reproducción**: `ThorReproTestBuilder.build(timeline)` emite el
   esqueleto del `integration_test` con los pasos exactos. Los valores de los
   campos y la aserción van marcados `TODO` — Thor sabe qué pasó, no qué

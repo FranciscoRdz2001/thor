@@ -74,6 +74,15 @@ void main() {
     expect(bodyRan, isTrue);
     expect(resolverCalled, isFalse, reason: 'apagado = cero costo');
     expect(ThorCore.instance, isNull);
+    // La fachada apagada es no-op, nunca error.
+    Thor.setUser('cli_1', traits: {'plan': 'pro'});
+    expect(ThorCore.instance, isNull);
+  });
+
+  test('setUser con Thor encendido llega al núcleo', () async {
+    await Thor.run(() async {});
+    Thor.setUser('cli_9');
+    expect(ThorCore.instance!.userId, 'cli_9');
   });
 
   test('el resolver corre antes que el body (el journal captura el arranque)',

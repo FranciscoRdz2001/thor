@@ -81,6 +81,35 @@ void main() {
     expect(written.containsAll(refs), isTrue);
   });
 
+  testWidgets('user identity: uid in meta when known, user record on change',
+      (tester) async {
+    Thor.setUser('cli_1');
+    await tester.pumpWidget(app('Hola'));
+    await tester.runAsync(
+      () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    Thor.setUser('cli_2', traits: {'plan': 'pro'});
+    Thor.setUser(null);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final all = await records(tester);
+    final maps = all.whereType<Map<String, Object?>>();
+    expect(maps.firstWhere((r) => r['t'] == 'meta')['uid'], 'cli_1');
+    final users = [
+      for (final r in maps)
+        if (r['t'] == 'user') r,
+    ];
+    expect(users.map((u) => u['id']), ['cli_2', null]);
+    // Solo el id viaja en el replay; los traits se quedan en el journal.
+    expect(users.first.keys, unorderedEquals(['t', 'ts', 'id']));
+    // Y no se duplica como evento genérico.
+    expect(
+      maps.where((r) => r['t'] == 'ev' && r['k'] == 'environment'),
+      isEmpty,
+    );
+  });
+
   testWidgets('going back to a seen state sends only a ref', (tester) async {
     await tester.pumpWidget(app('Uno'));
     await tester.runAsync(

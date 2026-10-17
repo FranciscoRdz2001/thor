@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/util/failure_name.dart';
 
 /// Narrador: convierte la línea de tiempo en pasos de reproducción en
 /// lenguaje natural — el bloque que QA pega en el ticket sin redactar nada.
@@ -105,7 +106,7 @@ class ThorNarrator {
         case ThorEventKind.state:
           // Solo transiciones HACIA estados con pinta de fallo.
           final to = event.payload['to'];
-          if (to is String && _looksLikeFailure(to)) {
+          if (to is String && looksLikeFailureName(to)) {
             nested(event, '· ${event.payload['bloc']}: → $to');
           }
         case ThorEventKind.environment:
@@ -118,6 +119,12 @@ class ThorNarrator {
               nested(event, '⚠ Presión de memoria del sistema');
             case 'brightness':
               nested(event, '· Tema del sistema: ${event.payload['value']}');
+            case 'user':
+              final id = event.payload['id'];
+              nested(
+                event,
+                id == null ? '· Sesión sin usuario' : '· Usuario: $id',
+              );
             case 'textScale':
               nested(event, '· Escala de texto: ${event.payload['value']}');
             default:
@@ -145,14 +152,6 @@ class ThorNarrator {
       }
     }
     return lines.join('\n');
-  }
-
-  static bool _looksLikeFailure(String state) {
-    final lower = state.toLowerCase();
-    return lower.contains('error') ||
-        lower.contains('failure') ||
-        lower.contains('fail') ||
-        lower.contains('fallo');
   }
 
   static String _pathOf(Object? url) {

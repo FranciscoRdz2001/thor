@@ -101,13 +101,12 @@ class ThorAggregates {
     void flush() {
       if (buffer.length >= minTaps) {
         result.add({
-          'target': buffer.first.payload['label'] ??
-              buffer.first.payload['widget'],
+          'target':
+              buffer.first.payload['label'] ?? buffer.first.payload['widget'],
           'screen': buffer.first.screen?.display,
           'taps': buffer.length,
-          'withinMs': buffer.last.atUtc
-              .difference(buffer.first.atUtc)
-              .inMilliseconds,
+          'withinMs':
+              buffer.last.atUtc.difference(buffer.first.atUtc).inMilliseconds,
           'firstSeq': buffer.first.seq,
         });
       }
@@ -127,6 +126,54 @@ class ThorAggregates {
     return result;
   }
 
+  /// Blocs charlatanes: los que chocaron con el tope de ráfagas de estado
+  /// (resúmenes `action: 'burst'` del grabador). Un bloc que emite un
+  /// estado por scroll es un hallazgo de rendimiento — reconstruye y
+  /// re-pinta de más — aunque nada falle.
+  static List<Map<String, Object?>> noisyBlocs(List<ThorEvent> timeline) {
+    final byKey = <String, Map<String, Object?>>{};
+    final kept = <String, int>{};
+    for (final event in timeline) {
+      if (event.kind != ThorEventKind.state) continue;
+      final bloc = event.payload['bloc'];
+      final action = event.payload['action'];
+      if (action != 'burst') {
+        kept['$bloc|$action'] = (kept['$bloc|$action'] ?? 0) + 1;
+        continue;
+      }
+      final of = event.payload['burstOf'];
+      final entry = byKey.putIfAbsent(
+        '$bloc|$of',
+        () => {
+          'bloc': bloc,
+          'action': of,
+          'dropped': 0,
+          'screen': event.screen?.display,
+        },
+      );
+      entry['dropped'] =
+          (entry['dropped']! as int) + (event.payload['dropped'] as int? ?? 0);
+    }
+    return [
+      for (final MapEntry(:key, :value) in byKey.entries)
+        {...value, 'kept': kept[key] ?? 0},
+    ]..sort(
+        (a, b) => (b['dropped']! as int).compareTo(a['dropped']! as int),
+      );
+  }
+
+  /// Usuario vigente al final de [timeline] (último `signal: 'user'`), o
+  /// `null` si nunca se fijó o se limpió.
+  static String? lastUserId(List<ThorEvent> timeline) {
+    for (final event in timeline.reversed) {
+      if (event.kind == ThorEventKind.environment &&
+          event.payload['signal'] == 'user') {
+        return event.payload['id'] as String?;
+      }
+    }
+    return null;
+  }
+
   /// Veredicto de una línea para encabezar el reporte: la conclusión
   /// primero, para que un dev (o una IA) no tenga que deducirla leyendo
   /// todos los pasos.
@@ -143,8 +190,7 @@ class ThorAggregates {
         case ThorEventKind.network:
           requests++;
           final status = e.payload['statusCode'];
-          if (e.payload['error'] != null ||
-              (status is int && status >= 400)) {
+          if (e.payload['error'] != null || (status is int && status >= 400)) {
             failedRequests++;
           }
         case ThorEventKind.navigation:
@@ -230,10 +276,8 @@ class ThorAggregates {
 
     final result = <Map<String, Object?>>[];
     for (final MapEntry(key: name, value: samples) in byQueue.entries) {
-      final depths = samples
-          .map((e) => e.payload['depth'])
-          .whereType<int>()
-          .toList();
+      final depths =
+          samples.map((e) => e.payload['depth']).whereType<int>().toList();
       if (depths.isEmpty) continue;
       final finalDepth = depths.last;
       if (finalDepth == 0) continue; // Drenó: no hay nada que reportar.

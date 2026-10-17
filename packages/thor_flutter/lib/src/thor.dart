@@ -62,6 +62,8 @@ class Thor {
   ///   y con el binding listo. `path_provider` sigue siendo decisión del
   ///   caller: Thor no lo impone.
   /// - [appInfo] / [installId]: identidad para la cabecera de sesión.
+  /// - [capture]: tope de ráfagas de estado por bloc y aligerado de las
+  ///   peticiones exitosas en el journal (ver [ThorCapturePolicy]).
   /// - [infraPackages]: paquetes propios que son infraestructura (tu SDK
   ///   de red, por ejemplo) y deben saltarse al resolver el
   ///   `archivo:línea` de origen.
@@ -75,6 +77,7 @@ class Thor {
     String? installId,
     Map<String, String> appInfo = const {},
     Set<String> infraPackages = const {},
+    ThorCapturePolicy capture = const ThorCapturePolicy(),
   }) async {
     if (!enabled) {
       await body();
@@ -111,6 +114,7 @@ class Thor {
           installId: installId,
           appInfo: appInfo,
           deviceInfo: _collectDeviceInfo(),
+          capture: capture,
         );
         ThorNetworkCapture.install();
         await body();
@@ -178,8 +182,7 @@ class Thor {
       'textScale': view == null
           ? '?'
           : view.platformDispatcher.textScaleFactor.toStringAsFixed(2),
-      'brightness':
-          PlatformDispatcher.instance.platformBrightness.name,
+      'brightness': PlatformDispatcher.instance.platformBrightness.name,
       if (size != null)
         'screen': '${size.width.round()}x${size.height.round()}',
       'dartVersion': Platform.version.split(' ').first,
@@ -200,6 +203,16 @@ class Thor {
 
   /// Pantalla manual para navegación que el Navigator no ve.
   static void setScreen(String name) => ThorCore.instance?.setScreen(name);
+
+  /// Fija (o limpia con `null`) el usuario de la sesión: queda en la línea
+  /// de tiempo, en el reporte y en el replay (`{"t":"user"}`).
+  ///
+  /// Pasa un id OPACO (tu id interno de cliente), nunca email/teléfono/
+  /// nombre: Thor lo guarda tal cual, sin hashear — transformarlo en
+  /// silencio impediría cruzarlo con tu backend. Los [traits] sí pasan por
+  /// la `RedactionPolicy` (solo claves de la allowlist quedan en claro).
+  static void setUser(String? id, {Map<String, String>? traits}) =>
+      ThorCore.instance?.setUser(id, traits: traits);
 
   /// Registra un proveedor de contexto de dominio.
   static void addContext(String key, ThorContextProvider provider) =>
@@ -231,8 +244,7 @@ class _LifecycleWatcher with WidgetsBindingObserver {
   /// son "solo en oscuro".
   @override
   void didChangePlatformBrightness() {
-    final value =
-        PlatformDispatcher.instance.platformBrightness.name;
+    final value = PlatformDispatcher.instance.platformBrightness.name;
     if (value == _lastBrightness?.name) return;
     _lastBrightness = PlatformDispatcher.instance.platformBrightness;
     ThorCore.instance?.recorder.record(ThorEventKind.environment, {
