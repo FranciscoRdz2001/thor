@@ -153,6 +153,9 @@ class ThorAggregates {
       );
       entry['dropped'] =
           (entry['dropped']! as int) + (event.payload['dropped'] as int? ?? 0);
+      // Estado final que la ráfaga recortó (el resumen más reciente manda).
+      final lastTo = event.payload['lastTo'];
+      if (lastTo != null) entry['lastTo'] = lastTo;
     }
     return [
       for (final MapEntry(:key, :value) in byKey.entries)

@@ -225,6 +225,7 @@ class ThorReport {
         b.writeln(
           '- ${n['bloc']} `${n['action']}`: ${n['dropped']} recortados, '
           '${n['kept']} conservados'
+          '${n['lastTo'] == null ? '' : ', último → ${n['lastTo']}'}'
           '${n['screen'] == null ? '' : ' (${n['screen']})'}',
         );
       }

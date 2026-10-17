@@ -137,6 +137,29 @@ void main() {
       });
     });
 
+    test('el resumen trae el último estado recortado y su pantalla', () {
+      final t = _Time();
+      withClock(Clock(() => t.now), () {
+        final r = recorder(t, limit: 1)
+          ..currentScreen = const ScreenId(routeName: '/home')
+          ..record(ThorEventKind.state, change('A', 'Loading'))
+          ..record(ThorEventKind.state, change('A', 'Loaded'))
+          ..record(ThorEventKind.state, change('A', 'Done'))
+          // El resumen sale ya en otra pantalla: debe quedar en la de la
+          // ráfaga.
+          ..currentScreen = const ScreenId(routeName: '/detail');
+        t.advance(1500);
+        r.record(ThorEventKind.log, {'label': 'x'});
+        final burst = r.store
+            .ofKind(ThorEventKind.state)
+            .singleWhere((e) => e.payload['action'] == 'burst');
+        expect(burst.payload['lastTo'], 'Done');
+        expect(burst.screen, const ScreenId(routeName: '/home'));
+        final noisy = ThorAggregates.noisyBlocs(r.store.timeline());
+        expect(noisy.single['lastTo'], 'Done');
+      });
+    });
+
     test('stateBurstLimit 0 desactiva el tope', () {
       final r = ThorRecorder(
         store: EventStore(),

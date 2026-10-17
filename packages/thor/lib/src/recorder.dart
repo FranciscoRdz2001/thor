@@ -42,6 +42,11 @@ class ThorRecorder {
   /// Tope de ráfagas de estado por bloc+acción; `null` = sin tope.
   final BurstLimiter? _stateBursts;
 
+  /// Último estado descartado de cada ráfaga abierta y la pantalla donde
+  /// pasó: el resumen sale después (quizá en otra pantalla) y sin esto la
+  /// línea de tiempo callaría el estado FINAL del bloc.
+  final Map<String, ({Object? to, ScreenId? screen})> _lastDropped = {};
+
   /// Pantalla activa. La mantienen los adaptadores de navegación
   /// (o `Thor.setScreen` para navegación que el Navigator no ve).
   ScreenId? currentScreen;
@@ -79,10 +84,12 @@ class ThorRecorder {
       // Los resúmenes vencidos salen ANTES del evento que los destapa:
       // así la línea de tiempo queda en orden.
       if (bursts.hasPending) _emitBurstSummaries(bursts.due(now), now);
-      if (kind == ThorEventKind.state &&
-          !_exemptFromBurst(payload) &&
-          !bursts.allow('${payload['bloc']}|${payload['action']}', now)) {
-        return null;
+      if (kind == ThorEventKind.state && !_exemptFromBurst(payload)) {
+        final key = '${payload['bloc']}|${payload['action']}';
+        if (!bursts.allow(key, now)) {
+          _lastDropped[key] = (to: payload['to'], screen: currentScreen);
+          return null;
+        }
       }
     }
     return _emit(kind, payload, now, origin: origin, screen: screenOverride);
@@ -127,6 +134,7 @@ class ThorRecorder {
     final limiter = _stateBursts!;
     for (final s in summaries) {
       final sep = s.key.lastIndexOf('|');
+      final last = _lastDropped.remove(s.key);
       _emit(
         ThorEventKind.state,
         {
@@ -137,8 +145,10 @@ class ThorRecorder {
           'limit': limiter.limit,
           'windowMs': limiter.window.inMilliseconds,
           'spanMs': s.lastDropAt.difference(s.firstDropAt).inMilliseconds,
+          if (last?.to != null) 'lastTo': last!.to,
         },
         now,
+        screen: last?.screen,
       );
     }
   }
