@@ -315,7 +315,14 @@ class ThorReplay {
     _idleTimer?.cancel();
     // Animación continua: no esperar quietud eterna.
     if (_ts - _lastSnapAt > _config.maxGap.inMilliseconds) {
-      SchedulerBinding.instance.addPostFrameCallback((_) => _snapshot());
+      final scheduler = SchedulerBinding.instance;
+      // Con un frame en camino se espera a que pinte; con la UI quieta no
+      // llega ninguno y el snapshot se perdería.
+      if (scheduler.hasScheduledFrame) {
+        scheduler.addPostFrameCallback((_) => _snapshot());
+      } else {
+        _idleTimer = Timer(Duration.zero, _snapshot);
+      }
       return;
     }
     _idleTimer = Timer(_config.idle, _snapshot);
@@ -408,11 +415,18 @@ class ThorReplay {
         vp = opVp;
       }
       current.add(op);
-      if (current.length >= 4 && fnv32(jsonEncode(op)) % 32 == 0) close();
+      if (current.length >= 4 && _isBoundary(op)) close();
     }
     close();
     return (vps: vps, refs: refs, blocks: blocks);
   }
+
+  /// Dónde cortar se decide SIN la posición del op: si un banner de otra
+  /// altura empuja la pantalla unos píxeles, el contenido igual debe caer
+  /// en los mismos bloques. (Medido en producción: cortar con la posición
+  /// hacía nuevos 138 bloques de la 2ª sesión; sin ella, 55.)
+  static bool _isBoundary(List<Object?> op) =>
+      fnv32(jsonEncode([op[0], op[3], op[4], ...op.skip(6)])) % 32 == 0;
 
   static num _sub(num a, num b) {
     final d = ((a - b) * 2).round();

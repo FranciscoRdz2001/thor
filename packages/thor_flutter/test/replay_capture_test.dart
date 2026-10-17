@@ -103,6 +103,53 @@ void main() {
     expect(kinds.where((k) => k == 'ref'), hasLength(1));
   });
 
+  testWidgets('the same content pushed down a few px reuses its blocks',
+      (tester) async {
+    Widget shifted(double top) => MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: Column(
+                children: [
+                  SizedBox(height: top),
+                  for (var i = 0; i < 120; i++)
+                    Container(
+                      color: Color(0xFF000000 + i * 0x050505),
+                      height: 30,
+                      child: Text('Producto $i con nombre ${'x' * (i % 7)}'),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+
+    Future<Set<Object?>> blocksFor(double top) async {
+      await tester.pumpWidget(shifted(top));
+      await tester.runAsync(() async {
+        await ThorReplay.start(const ThorReplayConfig(), directory: dir);
+        // UI quieta: el snapshot corre en un timer real, sin frame.
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      });
+      // Con un frame en camino, el snapshot espera a que pinte.
+      await tester.pump(const Duration(milliseconds: 300));
+      final all = await records(tester);
+      for (final f in dir.listSync()) {
+        f.deleteSync();
+      }
+      return {
+        for (final r in all.whereType<List<Object?>>())
+          if (r[0] == 'st')
+            for (final ref in r[5]! as List) (ref as List)[0],
+      };
+    }
+
+    final a = await blocksFor(10);
+    final b = await blocksFor(37);
+    // Only the block that holds the shift itself may change.
+    expect(a.length, greaterThanOrEqualTo(3));
+    expect(a.difference(b), hasLength(lessThanOrEqualTo(1)));
+  });
+
   test('hash is stable and 16 hex chars', () {
     expect(ThorReplay.fnv('abc'), ThorReplay.fnv('abc'));
     expect(ThorReplay.fnv('abc'), hasLength(16));
