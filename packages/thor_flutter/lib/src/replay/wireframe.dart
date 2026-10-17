@@ -1,5 +1,8 @@
 import 'dart:collection';
+import 'dart:math' as math;
 
+import 'package:flutter/cupertino.dart' show CupertinoTextField;
+import 'package:flutter/material.dart' show TextField;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:thor_flutter/src/visible_tree.dart';
@@ -70,12 +73,27 @@ class Wireframe {
 ///
 /// Formato de cada primitiva (arreglo compacto, posición 0 = tipo):
 /// - rect:     `['r', x, y, w, h, vp, color, radio, colorBorde, anchoBorde]`
+///   `+ [elevación, degradado]` solo si hay sombra o degradado (ver abajo)
 /// - texto:    `['t', x, y, w, h, vp, color, tamaño, peso, alineación, texto]`
 ///   (enmascarado: `texto` es la lista de largos de palabra)
 /// - ícono:    `['i', x, y, w, h, vp, color, tamaño, codepoint, fuente]`
-/// - imagen:   `['m', x, y, w, h, vp]` (+ `url` solo con `imageUrls`)
-/// - campo:    `['f', x, y, w, h, vp, largoDelTexto]` (contenido jamás)
+/// - imagen:   `['m', x, y, w, h, vp]` (+ `url` solo con `imageUrls`;
+///   `+ [url|null, radio]` si un recorte redondea la imagen)
+/// - campo:    `['f', x, y, w, h, vp, largoDelTexto]` (contenido jamás;
+///   `+ [largoDelHint]` solo vacío y con hint)
+/// - gráfico:  `['g', x, y, w, h, vp, tipo]` (0 = CustomPaint, 1 = vector
+///   tipo SVG/Lottie, 2 = vista nativa: mapa, webview) `+ [radio]`
 /// - viewport: `['v', x, y, w, h, vpPadre, id, eje]`
+///
+/// Los campos nuevos van SIEMPRE al final y solo cuando aportan algo: un
+/// widget sin sombra/degradado/recorte serializa exactamente igual que
+/// antes, así su bloque conserva el hash y no se vuelve a subir. Un visor
+/// viejo ignora lo que no conoce (y `g` no lo dibuja).
+///
+/// Degradado: `[0, colores, stops|null, bx, by, ex, ey]` (lineal, en
+/// Alignment), `[1, colores, stops|null, cx, cy, radio]` (radial),
+/// `[2, colores, stops|null, cx, cy]` (sweep). El color de la posición 6
+/// sigue siendo el primero, para visores que no lo entienden.
 class WireframeBuilder {
   /// Crea un recorrido de una sola vez.
   WireframeBuilder({required this.maskText, this.imageUrls = false});
@@ -112,7 +130,7 @@ class WireframeBuilder {
     if (root == null || views.isEmpty) return null;
     final view = views.first;
     _screen = view.physicalSize / view.devicePixelRatio;
-    _visit(root, const _Ctx(vp: 0, shift: Offset.zero, url: null));
+    _visit(root, const _Ctx(vp: 0, shift: Offset.zero));
     return Wireframe(_ops, _viewports, _offsets);
   }
 
@@ -120,7 +138,14 @@ class WireframeBuilder {
     var next = ctx;
     final widget = element.widget;
     if (widget is ThorReplayIgnore) return;
-    if (widget is Image) next = next.withUrl(_imageUrl(widget.image));
+    if (widget is Image) next = next.copyWith(url: _imageUrl(widget.image));
+    // El hint lo escribe la app, no el usuario: su LARGO dibuja el campo
+    // vacío como en el dispositivo. El texto tecleado jamás viaja.
+    if (widget is TextField) {
+      next = next.copyWith(hint: widget.decoration?.hintText?.length ?? 0);
+    } else if (widget is CupertinoTextField) {
+      next = next.copyWith(hint: widget.placeholder?.length ?? 0);
+    }
 
     if (element is RenderObjectElement) {
       final ro = element.renderObject;
@@ -135,6 +160,8 @@ class WireframeBuilder {
         _emit(ro, element, content, next);
         if (ro is RenderAbstractViewport) {
           next = _enterViewport(ro, content, next);
+        } else {
+          next = _enterClip(ro, content, next);
         }
       }
     }
@@ -152,55 +179,255 @@ class WireframeBuilder {
     // Los hijos se guardan en coordenadas de contenido: se les suma el
     // offset actual en su eje.
     final shift = ctx.shift + (axis == 0 ? Offset(0, px) : Offset(px, 0));
-    return _Ctx(vp: id, shift: shift, url: ctx.url);
+    return _Ctx(vp: id, shift: shift, url: ctx.url, hint: ctx.hint);
+  }
+
+  /// ClipRRect/ClipOval no pintan nada, pero dan la forma: una tarjeta o
+  /// un avatar es un rect/imagen recortado. Se recuerda el recorte para
+  /// redondear al descendiente que lo cubre exactamente.
+  _Ctx _enterClip(RenderBox ro, Rect content, _Ctx ctx) {
+    double? radius;
+    if (ro is RenderClipRRect && ro.clipBehavior != Clip.none) {
+      radius = ro.borderRadius.resolve(TextDirection.ltr).topLeft.x;
+    } else if (ro is RenderClipOval && ro.clipBehavior != Clip.none) {
+      radius = content.shortestSide / 2;
+    }
+    if (radius == null || radius <= 0) return ctx;
+    return ctx.copyWith(clip: _Clip(content, radius, ctx.vp));
+  }
+
+  /// Radio del recorte ancestro si [r] lo cubre exactamente (a la
+  /// cuantización de 0.5 px); `null` si no hay o no coincide.
+  static num? _clipRadius(Rect r, _Ctx ctx) {
+    final c = ctx.clip;
+    if (c == null || c.vp != ctx.vp) return null;
+    bool near(double a, double b) => (a - b).abs() <= 0.5;
+    if (near(r.left, c.rect.left) &&
+        near(r.top, c.rect.top) &&
+        near(r.right, c.rect.right) &&
+        near(r.bottom, c.rect.bottom)) {
+      return _q(c.radius);
+    }
+    return null;
   }
 
   void _emit(RenderBox ro, Element element, Rect r, _Ctx ctx) {
     final vp = ctx.vp;
     if (ro is RenderDecoratedBox) {
       final d = ro.decoration;
-      if (d is BoxDecoration) {
-        final color = d.color ?? d.gradient?.colors.first;
-        final border = d.border is Border ? d.border! as Border : null;
-        final side = border?.top;
-        if (color != null || (side != null && side.width > 0)) {
-          _ops.add([
-            'r',
-            ..._box(r),
-            vp,
-            color?.toARGB32(),
-            _radius(d.borderRadius),
-            side?.color.toARGB32(),
-            side?.width,
-          ]);
-        }
-      }
+      if (d is BoxDecoration) _decoration(d, r, ctx);
     } else if (ro is RenderPhysicalModel) {
-      _ops.add([
-        'r',
-        ..._box(r),
+      final circle = ro.shape == BoxShape.circle;
+      _rect(
+        circle ? _square(r) : r,
         vp,
         ro.color.toARGB32(),
-        _radius(ro.borderRadius),
-        null,
-        null,
-      ]);
+        circle
+            ? _q(r.shortestSide / 2)
+            : _radius(ro.borderRadius) ?? _clipRadius(r, ctx),
+        elevation: ro.elevation,
+      );
     } else if (ro is RenderPhysicalShape) {
-      _ops.add(['r', ..._box(r), vp, ro.color.toARGB32(), null, null, null]);
+      // Material (Card, botones, sheets) pinta con PhysicalShape: la forma
+      // viene en el clipper. Radio 0 → null, como antes de leerlo.
+      final shape = ro.clipper;
+      final radius = shape is ShapeBorderClipper
+          ? _shapeRadius(shape.shape, r.size)
+          : null;
+      _rect(
+        r,
+        vp,
+        ro.color.toARGB32(),
+        radius ?? _clipRadius(r, ctx),
+        elevation: ro.elevation,
+      );
     } else if (ro is RenderParagraph) {
       _paragraph(ro, r, vp);
     } else if (ro is RenderImage) {
-      _ops.add(['m', ..._box(r), vp, if (imageUrls) ctx.url ?? '']);
+      _image(r, ctx, ctx.url, _clipRadius(r, ctx));
     } else if (ro is RenderEditable) {
-      _ops.add(['f', ..._box(r), vp, ro.text?.toPlainText().length ?? 0]);
-    } else if (VisibleTree.runtimeName(ro) == '_RenderColoredBox') {
-      try {
-        final color = (ro as dynamic).color as Color;
-        _ops.add(['r', ..._box(r), vp, color.toARGB32(), null, null, null]);
-      } on Object {
-        // Forma interna cambió: se omite, no se rompe.
+      final len = ro.text?.toPlainText().length ?? 0;
+      final hint = ctx.hint ?? 0;
+      _ops.add(['f', ..._box(r), vp, len, if (len == 0 && hint > 0) hint]);
+    } else if (ro is RenderCustomPaint) {
+      // Solo el painter de FONDO (o el de frente de una hoja): el de frente
+      // con hijo es casi siempre adorno del framework (scrollbar, brillo
+      // de overscroll, banner de debug) y taparía la pantalla entera.
+      final painter =
+          ro.painter ?? (ro.child == null ? ro.foregroundPainter : null);
+      if (painter != null &&
+          !_framePainters.contains(VisibleTree.runtimeName(painter))) {
+        _graphic(r, ctx, 0);
+      }
+    } else if (ro is PlatformViewRenderBox || ro is RenderDarwinPlatformView) {
+      // Mapa, webview: sus píxeles viven fuera de Flutter. Una caja basta.
+      _graphic(r, ctx, 2);
+    } else {
+      final name = VisibleTree.runtimeName(ro);
+      if (name == '_RenderColoredBox') {
+        try {
+          final color = (ro as dynamic).color as Color;
+          _rect(r, vp, color.toARGB32(), _clipRadius(r, ctx));
+        } on Object {
+          // Forma interna cambió: se omite, no se rompe.
+        }
+      } else if (_vectorRenders.contains(name)) {
+        _graphic(r, ctx, 1);
       }
     }
+  }
+
+  /// Render objects de paquetes de gráficos vectoriales (flutter_svg 2 vía
+  /// vector_graphics, flutter_svg 1, lottie). Por nombre: el SDK no depende
+  /// de esos paquetes.
+  static const _vectorRenders = {
+    'RenderVectorGraphic',
+    'RenderPictureVectorGraphic',
+    'RenderPicture',
+    'RenderLottie',
+  };
+
+  /// Painters internos del framework que no son contenido (indicador de
+  /// tabs, bordes de Material, efecto de estirar, manijas de selección).
+  /// Con `--obfuscate` el nombre cambia y se dibujan como gráfico: falla
+  /// hacia mostrar de más una caja, nunca hacia romper.
+  static const _framePainters = {
+    '_IndicatorPainter',
+    '_DividerPainter',
+    '_ShapeBorderPainter',
+    '_StretchEffectPainter',
+    '_RadialPainter',
+    '_ShadowPainter',
+    '_TextSelectionHandlePainter',
+    '_CupertinoTextSelectionHandlePainter',
+    '_CupertinoDividerPainter',
+    '_InputBorderPainter',
+    '_GridPaperPainter',
+    '_SemanticsDebuggerPainter',
+    '_ExitWidgetSelectionTooltipPainter',
+  };
+
+  void _decoration(BoxDecoration d, Rect r, _Ctx ctx) {
+    final circle = d.shape == BoxShape.circle;
+    // Un círculo se pinta inscrito en el lado corto: se manda su cuadrado.
+    final box = circle ? _square(r) : r;
+    final radius = circle
+        ? _q(box.width / 2)
+        : _radius(d.borderRadius) ?? _clipRadius(r, ctx);
+    final color = d.color ?? d.gradient?.colors.first;
+    final border = d.border is Border ? d.border! as Border : null;
+    final side = border?.top;
+    if (color != null || (side != null && side.width > 0)) {
+      var shadow = 0.0;
+      for (final s in d.boxShadow ?? const <BoxShadow>[]) {
+        // La elevación de Material proyecta ~2× su valor de desenfoque.
+        if (s.blurRadius / 2 > shadow) shadow = s.blurRadius / 2;
+      }
+      _rect(
+        box,
+        ctx.vp,
+        color?.toARGB32(),
+        radius,
+        borderColor: side?.color.toARGB32(),
+        borderWidth: side?.width,
+        elevation: shadow,
+        gradient: _gradient(d.gradient),
+      );
+    }
+    // Imagen de fondo (CircleAvatar.backgroundImage, banners): caja de
+    // imagen, sin URL salvo `imageUrls`.
+    final image = d.image;
+    if (image != null) {
+      _image(box, ctx, _imageUrl(image.image), radius);
+    }
+  }
+
+  /// Emite un rect. Las posiciones 10 y 11 (elevación, degradado) solo
+  /// aparecen si hay algo que decir: sin ellas el op es idéntico al de
+  /// siempre (mismo hash de bloque).
+  void _rect(
+    Rect r,
+    int vp,
+    int? color,
+    num? radius, {
+    int? borderColor,
+    double? borderWidth,
+    double elevation = 0,
+    List<Object?>? gradient,
+  }) {
+    final hasElevation = elevation > 0;
+    _ops.add([
+      'r',
+      ..._box(r),
+      vp,
+      color,
+      radius,
+      borderColor,
+      borderWidth,
+      if (hasElevation) _q(elevation) else if (gradient != null) null,
+      if (gradient != null) gradient,
+    ]);
+  }
+
+  void _image(Rect r, _Ctx ctx, String? url, num? radius) {
+    _ops.add([
+      'm',
+      ..._box(r),
+      ctx.vp,
+      if (imageUrls) url ?? '' else if (radius != null) null,
+      if (radius != null) radius,
+    ]);
+  }
+
+  void _graphic(Rect r, _Ctx ctx, int kind) {
+    final radius = _clipRadius(r, ctx);
+    _ops.add(['g', ..._box(r), ctx.vp, kind, if (radius != null) radius]);
+  }
+
+  static Rect _square(Rect r) => Rect.fromCenter(
+        center: r.center,
+        width: r.shortestSide,
+        height: r.shortestSide,
+      );
+
+  /// Radio de una forma de Material, o `null` si es recta o no se conoce.
+  static num? _shapeRadius(ShapeBorder shape, Size size) {
+    double? radius;
+    if (shape is RoundedRectangleBorder) {
+      radius = shape.borderRadius.resolve(TextDirection.ltr).topLeft.x;
+    } else if (shape is RoundedSuperellipseBorder) {
+      radius = shape.borderRadius.resolve(TextDirection.ltr).topLeft.x;
+    } else if (shape is CircleBorder || shape is StadiumBorder) {
+      radius = size.shortestSide / 2;
+    }
+    return radius == null || radius <= 0 ? null : _q(radius);
+  }
+
+  /// Degradado compacto (ver formato arriba) o `null`. Unas decenas de
+  /// bytes y solo en los widgets que lo tienen.
+  static List<Object?>? _gradient(Gradient? g) {
+    if (g == null) return null;
+    final colors = [for (final c in g.colors) c.toARGB32()];
+    final stops = g.stops == null ? null : [for (final s in g.stops!) _r2(s)];
+    if (g is LinearGradient) {
+      final b = g.begin.resolve(TextDirection.ltr);
+      final e = g.end.resolve(TextDirection.ltr);
+      return [0, colors, stops, _r2(b.x), _r2(b.y), _r2(e.x), _r2(e.y)];
+    }
+    if (g is RadialGradient) {
+      final c = g.center.resolve(TextDirection.ltr);
+      return [1, colors, stops, _r2(c.x), _r2(c.y), _r2(g.radius)];
+    }
+    if (g is SweepGradient) {
+      final c = g.center.resolve(TextDirection.ltr);
+      return [2, colors, stops, _r2(c.x), _r2(c.y)];
+    }
+    return null;
+  }
+
+  static num _r2(double v) {
+    final h = (v * 100).round();
+    return h % 100 == 0 ? h ~/ 100 : h / 100;
   }
 
   void _paragraph(RenderParagraph ro, Rect r, int vp) {
@@ -273,7 +500,31 @@ class WireframeBuilder {
   Rect? _globalRect(RenderBox ro) {
     try {
       final m = debugExactTransforms ? ro.getTransformTo(null) : _transform(ro);
-      return MatrixUtils.transformRect(m, Offset.zero & ro.size);
+      final box = Offset.zero & ro.size;
+      // Rotado (Transform.rotate, RotationTransition, un spinner): la caja
+      // envolvente crece y encoge con el ángulo — basura que además cambia
+      // el hash en cada cuadro. Se aproxima con la caja SIN rotar,
+      // escalada y centrada donde cae su centro: estable y del tamaño real.
+      // Sin rotación estas entradas son 0 exacto y el cálculo es el de
+      // siempre (mismos doubles, mismos hashes).
+      final skewX = m.entry(0, 1);
+      final skewY = m.entry(1, 0);
+      if (skewX != 0 || skewY != 0) {
+        final sx = m.entry(0, 0);
+        final sy = m.entry(1, 1);
+        // Múltiplos de 90°: la envolvente ya es exacta.
+        if (sx.abs() > 1e-6 || sy.abs() > 1e-6) {
+          final center = MatrixUtils.transformPoint(m, box.center);
+          final scaleX = math.sqrt(sx * sx + skewY * skewY);
+          final scaleY = math.sqrt(skewX * skewX + sy * sy);
+          return Rect.fromCenter(
+            center: center,
+            width: box.width * scaleX,
+            height: box.height * scaleY,
+          );
+        }
+      }
+      return MatrixUtils.transformRect(m, box);
     } on Object {
       return null;
     }
@@ -322,11 +573,38 @@ class WireframeBuilder {
 }
 
 class _Ctx {
-  const _Ctx({required this.vp, required this.shift, required this.url});
+  const _Ctx({
+    required this.vp,
+    required this.shift,
+    this.url,
+    this.clip,
+    this.hint,
+  });
 
   final int vp;
   final Offset shift;
   final String? url;
 
-  _Ctx withUrl(String? url) => _Ctx(vp: vp, shift: shift, url: url);
+  /// Recorte redondeado ancestro más cercano.
+  final _Clip? clip;
+
+  /// Largo del hint del campo de texto ancestro.
+  final int? hint;
+
+  _Ctx copyWith({String? url, _Clip? clip, int? hint}) => _Ctx(
+        vp: vp,
+        shift: shift,
+        url: url ?? this.url,
+        clip: clip ?? this.clip,
+        hint: hint ?? this.hint,
+      );
+}
+
+class _Clip {
+  const _Clip(this.rect, this.radius, this.vp);
+
+  /// En coordenadas de contenido del viewport [vp].
+  final Rect rect;
+  final double radius;
+  final int vp;
 }
