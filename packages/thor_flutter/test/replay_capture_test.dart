@@ -45,6 +45,19 @@ void main() {
         ),
       );
 
+  testWidgets('route names from deep links are scrubbed in the replay',
+      (tester) async {
+    await tester.pumpWidget(app('Hola'));
+    await tester.runAsync(
+      () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+    );
+    Thor.setScreen('/orders/10293847');
+    await tester.pump(const Duration(milliseconds: 100));
+    final body = jsonEncode(await records(tester));
+    expect(body, isNot(contains('10293847')));
+    expect(body, contains('/orders/:n'));
+  });
+
   testWidgets('a screen state travels as block refs; blocks once, no URLs',
       (tester) async {
     await tester.pumpWidget(app('Hola'));

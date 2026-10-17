@@ -730,7 +730,13 @@ class ThorReplay {
       return;
     }
     final slim = switch (event.kind) {
-      ThorEventKind.navigation => {'a': p['action'], 'to': p['to']},
+      // Un nombre de ruta puede traer datos (deep link `/orders/10293847`).
+      ThorEventKind.navigation => {
+          'a': p['action'],
+          'to': p['to'] is String
+              ? RedactionPolicy.scrubText(p['to']! as String)
+              : p['to'],
+        },
       ThorEventKind.interaction => _slimInteraction(p),
       // El mensaje es el toString de la excepción: puede interpolar datos
       // del usuario ("cliente ana@x.com no existe"). Sale del dispositivo
@@ -754,7 +760,8 @@ class ThorReplay {
       't': 'ev',
       'ts': _ts,
       'k': event.kind.name,
-      if (event.screen != null) 'sc': event.screen!.display,
+      if (event.screen != null)
+        'sc': RedactionPolicy.scrubText(event.screen!.display),
       'p': slim,
     });
     // Una sesión con fallo se sube entera aunque no estuviera en la
