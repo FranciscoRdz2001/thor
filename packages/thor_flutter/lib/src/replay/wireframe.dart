@@ -80,6 +80,7 @@ class Wireframe {
 /// - imagen:   `['m', x, y, w, h, vp]` (+ `url` solo con `imageUrls`;
 ///   `+ [url|null, radio]` si un recorte redondea la imagen)
 /// - campo:    `['f', x, y, w, h, vp, largoDelTexto]` (contenido jamás;
+///   con `obscureText` el largo es siempre 8 si hay algo escrito;
 ///   `+ [largoDelHint]` solo vacío y con hint)
 /// - gráfico:  `['g', x, y, w, h, vp, tipo]` (0 = CustomPaint, 1 = vector
 ///   tipo SVG/Lottie, 2 = vista nativa: mapa, webview) `+ [radio]`
@@ -246,7 +247,10 @@ class WireframeBuilder {
     } else if (ro is RenderImage) {
       _image(r, ctx, ctx.url, _clipRadius(r, ctx));
     } else if (ro is RenderEditable) {
-      final len = ro.text?.toPlainText().length ?? 0;
+      final real = ro.text?.toPlainText().length ?? 0;
+      // Contraseña: ni el largo viaja (acota la fuerza bruta). Lleno o
+      // vacío, nada más: un lleno siempre mide [_obscuredLength].
+      final len = ro.obscureText && real > 0 ? _obscuredLength : real;
       final hint = ctx.hint ?? 0;
       _ops.add(['f', ..._box(r), vp, len, if (len == 0 && hint > 0) hint]);
     } else if (ro is RenderCustomPaint) {
@@ -276,6 +280,9 @@ class WireframeBuilder {
       }
     }
   }
+
+  /// Largo fijo de un campo oculto (`obscureText`) con contenido.
+  static const _obscuredLength = 8;
 
   /// Render objects de paquetes de gráficos vectoriales (flutter_svg 2 vía
   /// vector_graphics, flutter_svg 1, lottie). Por nombre: el SDK no depende

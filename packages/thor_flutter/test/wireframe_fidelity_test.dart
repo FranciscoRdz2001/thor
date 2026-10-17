@@ -394,6 +394,19 @@ void main() {
       expect(field[6], 7);
       expect(jsonEncode(ops()), isNot(contains('secreto')));
     });
+
+    testWidgets('contraseña: el largo real jamás viaja', (tester) async {
+      await pump(
+        tester,
+        const SizedBox(width: 200, child: TextField(obscureText: true)),
+      );
+      await tester.enterText(find.byType(TextField), 'abc');
+      await tester.pump();
+      expect(kind('f').single[6], 8);
+      await tester.enterText(find.byType(TextField), 'una-clave-muy-larga');
+      await tester.pump();
+      expect(kind('f').single[6], 8);
+    });
   });
 }
 
