@@ -56,7 +56,8 @@ patrones que un humano tardaría en ver:
   descartado se cuenta). `dart:developer` `log()` no se puede interceptar:
   cambia `import 'dart:developer';` por
   `import 'package:thor_flutter/log.dart';` (misma firma) o usa `Thor.log`.
-  El narrador omite los de debug; el replay lleva solo warn/error.
+  El narrador omite los de debug; el replay lleva solo warn/error
+  (todos los niveles en modo diagnóstico, que enciende el dashboard).
   `Thor.run(captureLogs: false)` lo apaga.
 - **Test de reproducción**: `ThorReproTestBuilder.build(timeline)` emite el
   esqueleto del `integration_test` con los pasos exactos. Los valores de los
