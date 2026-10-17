@@ -227,4 +227,18 @@ void main() {
     expect(dash.configCalls[1]['uid'], 'u1');
     expect(dash.configCalls[1]['props'], {'email': 'ana@x.com'});
   });
+
+  test('an uploaded error message is scrubbed like logs', () async {
+    await start(config: false);
+    ThorCore.instance!.recorder.record(ThorEventKind.error, {
+      'type': 'StateError',
+      'message': 'Bad state: cliente ana@x.com tel 55 1234 5678 token=abc',
+      'source': 'zone',
+    });
+    await _until(() => dash.events('error').isNotEmpty, reason: 'error');
+    expect(
+      dash.events('error').single['msg'],
+      'Bad state: cliente :email tel :n token=${RedactionPolicy.redactedMarker}',
+    );
+  });
 }

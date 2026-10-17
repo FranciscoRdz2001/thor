@@ -732,9 +732,15 @@ class ThorReplay {
     final slim = switch (event.kind) {
       ThorEventKind.navigation => {'a': p['action'], 'to': p['to']},
       ThorEventKind.interaction => _slimInteraction(p),
+      // El mensaje es el toString de la excepción: puede interpolar datos
+      // del usuario ("cliente ana@x.com no existe"). Sale del dispositivo
+      // por defecto (uploadOnError): misma limpieza que logs y labels.
       ThorEventKind.error => {
           'type': p['type'],
-          'msg': p['message'],
+          'msg': switch (p['message']) {
+            final String m => RedactionPolicy.scrubText(m),
+            final other => other,
+          },
           'src': p['source'],
           'at': event.origin,
         },
