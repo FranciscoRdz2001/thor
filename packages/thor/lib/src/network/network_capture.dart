@@ -34,6 +34,16 @@ class ThorNetworkCapture {
   /// siquiera en RAM quieres tokens retenidos.
   static bool captureRawCurl = true;
 
+  /// Prefijos de URL que NO se graban: el transporte del propio Thor
+  /// (subida del replay) — sin esto cada subida se graba a sí misma.
+  static final Set<String> ignoredPrefixes = {};
+
+  static bool _ignored(Uri url) {
+    if (ignoredPrefixes.isEmpty) return false;
+    final s = url.toString();
+    return ignoredPrefixes.any(s.startsWith);
+  }
+
   /// Instala la captura. Idempotente.
   static void install() {
     if (_installed) return;
@@ -87,6 +97,7 @@ class _SpyHttpClient implements HttpClient {
 
   @override
   Future<HttpClientRequest> openUrl(String method, Uri url) async {
+    if (ThorNetworkCapture._ignored(url)) return inner.openUrl(method, url);
     // El origen se resuelve AQUÍ, en el disparo. `currentOrigin` atraviesa
     // los gaps asíncronos (app → bloc → dio) cuando la zona captura la
     // cadena — sin ella, `StackTrace.current` solo trae frames de dio.

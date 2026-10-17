@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/overlay/report_share.dart';
+import 'package:thor_flutter/src/replay/wireframe.dart';
 
 /// Aviso de sesión muerta: si la sesión anterior no cerró limpio, al
 /// arrancar se ofrece su reporte — la evidencia del crash sin que nadie
@@ -22,18 +23,20 @@ class ThorCrashPrompt {
     if (overlay == null) return;
     late OverlayEntry entry;
     entry = OverlayEntry(
-      builder: (context) => _CrashBanner(
-        recovered: recovered,
-        onDismiss: entry.remove,
-        onView: () {
-          entry.remove();
-          navigator.push(
-            MaterialPageRoute<void>(
-              builder: (_) => ThorCrashReportPage(recovered: recovered),
-              settings: const RouteSettings(name: 'thor/crash-report'),
-            ),
-          );
-        },
+      builder: (context) => ThorReplayIgnore(
+        child: _CrashBanner(
+          recovered: recovered,
+          onDismiss: entry.remove,
+          onView: () {
+            entry.remove();
+            navigator.push(
+              MaterialPageRoute<void>(
+                builder: (_) => ThorCrashReportPage(recovered: recovered),
+                settings: const RouteSettings(name: 'thor/crash-report'),
+              ),
+            );
+          },
+        ),
       ),
     );
     overlay.insert(entry);
