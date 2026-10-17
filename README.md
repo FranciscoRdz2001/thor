@@ -44,7 +44,8 @@ patrones que un humano tardaría en ver:
   sigue completo. `fullNetworkInJournal: true` lo desactiva.
 - **Identidad**: `Thor.setUser(id, traits:)` deja el usuario en la línea de
   tiempo, el reporte y el replay. El id se guarda tal cual (pasa uno
-  opaco, nunca un email); los traits pasan por la `RedactionPolicy`.
+  opaco, nunca un email: uno con forma de email se sustituye por el
+  marcador de redactado); los traits pasan por la `RedactionPolicy`.
 - **Test de reproducción**: `ThorReproTestBuilder.build(timeline)` emite el
   esqueleto del `integration_test` con los pasos exactos. Los valores de los
   campos y la aserción van marcados `TODO` — Thor sabe qué pasó, no qué

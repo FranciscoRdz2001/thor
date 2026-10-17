@@ -160,23 +160,31 @@ class ThorCore {
   /// [id] se guarda TAL CUAL: Thor no lo hashea ni lo transforma (un hash
   /// silencioso haría imposible cruzarlo con el backend). Por eso la app
   /// debe pasar un id OPACO (el id interno de cliente), nunca un email,
-  /// teléfono o nombre. [traits] (plan, tienda, rol…) sí pasan por la
-  /// [RedactionPolicy]: solo quedan en claro las claves de la allowlist.
+  /// teléfono o nombre. Red de seguridad: un id con forma de email se
+  /// sustituye por [RedactionPolicy.redactedMarker] — viajaría en claro al
+  /// journal, al reporte y al servidor del replay. [traits] (plan, tienda,
+  /// rol…) sí pasan por la [RedactionPolicy]: solo quedan en claro las
+  /// claves de la allowlist.
   ///
   /// Graba un evento de entorno `signal: 'user'` solo si algo cambió.
   void setUser(String? id, {Map<String, String>? traits}) {
+    final safeId = id != null && _emailShaped.hasMatch(id)
+        ? RedactionPolicy.redactedMarker
+        : id;
     final redacted = traits == null || traits.isEmpty
         ? null
         : redaction.redactValue(traits)! as Map<String, Object?>;
-    if (id == _userId && _sameTraits(redacted, _userTraits)) return;
-    _userId = id;
+    if (safeId == _userId && _sameTraits(redacted, _userTraits)) return;
+    _userId = safeId;
     _userTraits = redacted;
     recorder.record(ThorEventKind.environment, {
       'signal': 'user',
-      'id': id,
+      'id': safeId,
       if (redacted != null) 'traits': redacted,
     });
   }
+
+  static final _emailShaped = RegExp(r'[^\s@]+@[^\s@]+\.[^\s@]+');
 
   static bool _sameTraits(Map<String, Object?>? a, Map<String, Object?>? b) {
     if (a == null || b == null) return a == b;

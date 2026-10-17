@@ -209,7 +209,8 @@ class Thor {
   ///
   /// Pasa un id OPACO (tu id interno de cliente), nunca email/teléfono/
   /// nombre: Thor lo guarda tal cual, sin hashear — transformarlo en
-  /// silencio impediría cruzarlo con tu backend. Los [traits] sí pasan por
+  /// silencio impediría cruzarlo con tu backend. Un id con forma de email
+  /// se sustituye por el marcador de redactado. Los [traits] sí pasan por
   /// la `RedactionPolicy` (solo claves de la allowlist quedan en claro).
   static void setUser(String? id, {Map<String, String>? traits}) =>
       ThorCore.instance?.setUser(id, traits: traits);

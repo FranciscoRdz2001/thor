@@ -298,6 +298,18 @@ void main() {
       await core.dispose();
     });
 
+    test('un id con forma de email jamás se guarda en claro', () async {
+      final core = await ThorCore.init()
+        ..setUser('ana.perez@gmail.com');
+      expect(core.userId, RedactionPolicy.redactedMarker);
+      final user = core.store
+          .ofKind(ThorEventKind.environment)
+          .singleWhere((e) => e.payload['signal'] == 'user');
+      expect(user.payload['id'], RedactionPolicy.redactedMarker);
+      expect(jsonEncode(core.store.timeline()), isNot(contains('gmail')));
+      await core.dispose();
+    });
+
     test('el reporte declara el usuario vigente', () async {
       final core = await ThorCore.init()
         ..setUser('cli_1');
