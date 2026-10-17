@@ -186,6 +186,11 @@ class WireframeBuilder {
           obscure: widget.obscureText,
           keyboard: widget.keyboardType,
           autofill: widget.autofillHints,
+          labels: [
+            widget.decoration?.labelText,
+            widget.decoration?.hintText,
+            widget.decoration?.helperText,
+          ],
         ),
       );
     } else if (widget is CupertinoTextField) {
@@ -195,6 +200,7 @@ class WireframeBuilder {
           obscure: widget.obscureText,
           keyboard: widget.keyboardType,
           autofill: widget.autofillHints,
+          labels: [widget.placeholder],
         ),
       );
     }
@@ -365,15 +371,38 @@ class WireframeBuilder {
   };
 
   /// ¿El contenido de este campo es un secreto? `obscureText`, teclado de
-  /// contraseña visible o autofill de contraseña/tarjeta/OTP.
+  /// contraseña visible, autofill de contraseña/tarjeta/OTP, o una
+  /// etiqueta/hint que lo dice ("Número de tarjeta", "CVV", "NIP",
+  /// "Contraseña"): un campo de tarjeta casi nunca oculta el texto ni
+  /// declara autofill, y con el texto visible por defecto su número
+  /// viajaría en claro.
   static bool _sensitiveField({
     required bool obscure,
     required TextInputType? keyboard,
     required Iterable<String>? autofill,
+    Iterable<String?> labels = const [],
   }) =>
       obscure ||
       keyboard == TextInputType.visiblePassword ||
-      (autofill?.any(_secretAutofill.contains) ?? false);
+      (autofill?.any(_secretAutofill.contains) ?? false) ||
+      labels.any((l) => l != null && _secretLabel(l));
+
+  static final _nonWord = RegExp(r'[^\wñÑáéíóúÁÉÍÓÚ]+');
+  static final _securityLabel =
+      RegExp('seguridad|security|vencimiento|expira', caseSensitive: false);
+
+  /// Etiqueta de un campo de secreto: la frase entera o alguna palabra es
+  /// clave de secreto ([RedactionPolicy.isSecretKey]: "card number",
+  /// "contraseña", "cvv", "pin"), o habla de seguridad/vencimiento
+  /// ("Código de seguridad", "Fecha de vencimiento").
+  static bool _secretLabel(String label) {
+    final words =
+        label.trim().split(_nonWord).where((w) => w.isNotEmpty).toList();
+    if (words.isEmpty) return false;
+    return RedactionPolicy.isSecretKey(words.join('_')) ||
+        words.any(RedactionPolicy.isSecretKey) ||
+        _securityLabel.hasMatch(label);
+  }
 
   /// Render objects de paquetes de gráficos vectoriales (flutter_svg 2 vía
   /// vector_graphics, flutter_svg 1, lottie). Por nombre: el SDK no depende

@@ -449,6 +449,28 @@ void main() {
         'autofill de tarjeta',
         const TextField(autofillHints: [AutofillHints.creditCardNumber]),
       ),
+      // Un campo de tarjeta casi nunca oculta ni declara autofill: la
+      // etiqueta lo delata.
+      (
+        'etiqueta de tarjeta',
+        const TextField(
+          decoration: InputDecoration(labelText: 'Número de tarjeta'),
+        ),
+      ),
+      (
+        'hint de CVV',
+        const TextField(decoration: InputDecoration(hintText: 'CVV')),
+      ),
+      (
+        'etiqueta de NIP',
+        const TextField(decoration: InputDecoration(labelText: 'Tu NIP')),
+      ),
+      (
+        'código de seguridad',
+        const TextField(
+          decoration: InputDecoration(labelText: 'Código de seguridad'),
+        ),
+      ),
     ]) {
       testWidgets('visible: campo sensible ($name) jamás manda contenido',
           (tester) async {
@@ -461,6 +483,22 @@ void main() {
         expect(all, isNot(contains('hunter2')));
       });
     }
+
+    testWidgets('visible: una etiqueta normal no vuelve sensible el campo',
+        (tester) async {
+      await pump(
+        tester,
+        const SizedBox(
+          width: 200,
+          child: TextField(
+            decoration: InputDecoration(labelText: 'Nombre del titular'),
+          ),
+        ),
+      );
+      await tester.enterText(find.byType(TextField), 'Ana Pérez');
+      await tester.pump();
+      expect(visibleFields().single.last, 'Ana Pérez');
+    });
   });
 }
 
