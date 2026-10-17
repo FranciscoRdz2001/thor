@@ -144,24 +144,16 @@ class Thor {
         ScreenCapture.install();
         _watchLifecycle();
       }),
-      (error, stack) {
-        ThorCore.instance?.recorder.record(
-          ThorEventKind.error,
-          {
-            'source': 'zone',
-            'fatal': true,
-            'type': error.runtimeType.toString(),
-            'message': error.toString(),
-            'stack': stack.toString(),
-          },
-          origin: ErrorCapture.originFromStack(stack),
-        );
-        // Re-lanzar rompería la zona; el error ya quedó registrado y los
-        // handlers de la app (Crashlytics vía PlatformDispatcher) ya
-        // corrieron por su propio canal.
-      },
-      // `print` de la app (y de sus paquetes) a la línea de tiempo.
-      zoneSpecification: captureLogs ? LogCapture.zoneSpecification : null,
+      // Re-lanzar rompería la zona; el error queda registrado y los
+      // handlers de la app (Crashlytics vía PlatformDispatcher) corren por
+      // su propio canal.
+      ErrorCapture.recordZoneError,
+      zoneSpecification: ZoneSpecification(
+        // `print` de la app (y de sus paquetes) a la línea de tiempo.
+        print: captureLogs ? LogCapture.zoneSpecification.print : null,
+        // Los `runZonedGuarded` anidados de la app también graban.
+        fork: ErrorCapture.forkZone,
+      ),
     );
   }
 

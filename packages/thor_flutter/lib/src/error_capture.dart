@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:thor/thor.dart' hide originFromStack;
 import 'package:thor/thor.dart' as thor_core show originFromStack;
@@ -41,6 +43,57 @@ class ErrorCapture {
       // el solo hecho de instalar Thor.
       return previousPlatformHandler?.call(error, stack) ?? true;
     };
+  }
+
+  /// `fork` de la zona de `Thor.run`: toda zona que nazca debajo con su
+  /// propio `handleUncaughtError` (el `runZonedGuarded` de la app, el de
+  /// un paquete) graba el error en Thor ANTES de delegar a ese handler.
+  ///
+  /// Sin esto, un `runZonedGuarded(..., onError)` de la app se queda con
+  /// TODOS los errores async no capturados: el handler de la zona de Thor
+  /// nunca se entera y `PlatformDispatcher.onError` tampoco (la zona ya
+  /// los manejó). Visto en una app real cuyo `onError` estaba vacío: un
+  /// `throw` en un Timer no dejaba rastro ni subía el replay. El handler
+  /// de la app sigue corriendo igual — Thor solo mira.
+  static Zone forkZone(
+    Zone self,
+    ZoneDelegate parent,
+    Zone zone,
+    ZoneSpecification? specification,
+    Map<Object?, Object?>? zoneValues,
+  ) {
+    final handler = specification?.handleUncaughtError;
+    if (handler == null) return parent.fork(zone, specification, zoneValues);
+    return parent.fork(
+      zone,
+      ZoneSpecification.from(
+        specification!,
+        handleUncaughtError: (self, parent, zone, error, stack) {
+          recordZoneError(error, stack);
+          handler(self, parent, zone, error, stack);
+        },
+      ),
+      zoneValues,
+    );
+  }
+
+  /// El último error de zona grabado, hasta la siguiente microtarea: un
+  /// handler que reenvía al padre (`Chain.capture` lo hace) pasa el MISMO
+  /// error dos veces por [recordZoneError] en el mismo turno.
+  static Object? _lastZoneError;
+
+  /// Error async no capturado (zona de `Thor.run` o una anidada, ver
+  /// [forkZone]). Nunca lanza: corre dentro de un handler de errores.
+  static void recordZoneError(Object error, StackTrace stack) {
+    if (identical(error, _lastZoneError)) return;
+    _lastZoneError = error;
+    // Zona raíz: la microtarea no debe pasar por las zonas de la app.
+    Zone.root.scheduleMicrotask(() => _lastZoneError = null);
+    try {
+      _record(error, stack, source: 'zone', fatal: true);
+    } on Object {
+      // Grabar nunca debe romper el manejo de errores de la app.
+    }
   }
 
   static void _recordFlutterError(FlutterErrorDetails details) {

@@ -99,4 +99,45 @@ void main() {
 
     expect(order, ['resolver', 'body']);
   });
+
+  test('un runZonedGuarded de la app no le esconde a Thor los errores async',
+      () async {
+    // Caso real: la app envuelve su arranque en su propio
+    // runZonedGuarded con un onError vacío. Sin el fork de Thor, el throw
+    // de un Timer moría ahí sin dejar rastro.
+    final appSaw = <Object>[];
+    final done = Completer<void>();
+    await Thor.run(() {
+      runZonedGuarded(
+        () => Timer.run(() => throw StateError('timer de la app')),
+        (error, _) {
+          appSaw.add(error);
+          done.complete();
+        },
+      );
+    });
+    await done.future;
+
+    final errors = ThorCore.instance!.store.ofKind(ThorEventKind.error);
+    expect(errors, hasLength(1), reason: 'una vez, sin duplicar');
+    expect(errors.single.payload['source'], 'zone');
+    expect(errors.single.payload['message'], contains('timer de la app'));
+    expect(appSaw, hasLength(1), reason: 'el handler de la app sigue igual');
+  });
+
+  test('un error async sin zona de la app se graba una sola vez', () async {
+    final done = Completer<void>();
+    await Thor.run(() {
+      Timer.run(() {
+        // Tras el throw, la siguiente microtarea ve el error ya grabado.
+        scheduleMicrotask(done.complete);
+        throw StateError('timer suelto');
+      });
+    });
+    await done.future;
+
+    final errors = ThorCore.instance!.store.ofKind(ThorEventKind.error);
+    expect(errors, hasLength(1));
+    expect(errors.single.payload['message'], contains('timer suelto'));
+  });
 }
