@@ -69,7 +69,10 @@ patrones que un humano tardaría en ver:
 - **Replay como video**: el texto de la pantalla viaja visible (también lo
   escrito en campos normales). Jamás viaja el contenido de un campo
   sensible (`obscureText`, autofill de contraseña/tarjeta/OTP, teclado de
-  contraseña visible) ni nada dentro de `ThorReplayIgnore`.
+  contraseña visible, o etiqueta/hint de secreto: "Número de tarjeta",
+  "CVV", "NIP", "Código de seguridad") ni nada dentro de
+  `ThorReplayIgnore`. Un PIN dibujado con `Text` propios (cajitas de
+  OTP) no es un campo: envuélvelo en `ThorReplayIgnore`.
   `ThorReplayConfig(maskText: true)` enmascara el texto (largos de
   palabra) sin tocar el resto.
 - **Test de reproducción**: `ThorReproTestBuilder.build(timeline)` emite el
@@ -82,9 +85,12 @@ patrones que un humano tardaría en ver:
 - **3 líneas de integración**, nada por ruta/bloc/petición.
 - **Solo secretos por defecto**: `Authorization`, cookies, tokens
   (access/refresh/id/jwt/bearer), API keys, contraseñas, client secrets,
-  tarjeta/CVV/PIN se tapan en headers, query, cuerpos JSON a cualquier
-  profundidad y texto libre (`RedactionPolicy.secretsOnly()`, default de
-  `Thor.run`). Emails, ids, nombres, direcciones, teléfonos, rutas y
+  tarjeta/CVV/PIN, firmas de URL y session ids se tapan en headers, query
+  y fragmento (`#access_token=`), cuerpos JSON a cualquier profundidad y
+  texto libre (`RedactionPolicy.secretsOnly()`, default de `Thor.run`).
+  En texto libre (logs, errores, cuerpos cortados) también caen sin clave
+  al lado: JWT sueltos, `Bearer …`, la contraseña de `https://u:pw@host`
+  y números de tarjeta (Luhn). Emails, ids, nombres, direcciones, teléfonos, rutas y
   headers normales pasan tal cual: sin eso no se depura un servicio. Los
   valores de estado de blocs no se capturan por defecto.
 - **Modo estricto opt-in** para apps sensibles: el comportamiento anterior

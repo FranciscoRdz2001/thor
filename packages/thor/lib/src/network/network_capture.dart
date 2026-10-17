@@ -125,7 +125,7 @@ class _SpyHttpClient implements HttpClient {
         ThorEventKind.network,
         {
           'method': method,
-          'url': _SpyRequest._redactUrl(url, core.redaction).toString(),
+          'url': _SpyRequest._urlText(url, core.redaction),
           'durationMs': clock.now().difference(startedAt).inMilliseconds,
           'error': error.runtimeType.toString(),
           // El toString puede traer la URL con `?token=…`.
@@ -354,7 +354,7 @@ class _SpyRequest implements HttpClientRequest {
     final responseMime = response?.headers.contentType?.mimeType;
     final payload = <String, Object?>{
       'method': inner.method,
-      'url': _redactUrl(inner.uri, redaction).toString(),
+      'url': _urlText(inner.uri, redaction),
       'durationMs': elapsed.inMilliseconds,
       'requestHeaders': redaction.redactFlatMap(requestHeaders),
       'requestBytes': _requestTotal,
@@ -419,7 +419,7 @@ class _SpyRequest implements HttpClientRequest {
         parts.add('-d ${_sq(jsonEncode(body))}');
       }
     }
-    parts.add(_sq(_redactUrl(inner.uri, redaction).toString()));
+    parts.add(_sq(_urlText(inner.uri, redaction)));
     return parts.join(' ');
   }
 
@@ -453,15 +453,39 @@ class _SpyRequest implements HttpClientRequest {
   /// válida y agrupable (`/profile/:email`).
   static Uri _redactUrl(Uri uri, RedactionPolicy redaction) {
     if (redaction.isSecretsOnly) {
-      final all = uri.queryParametersAll;
-      if (!all.keys.any(RedactionPolicy.isSecretKey)) return uri;
+      // Pares `clave=valor` de la query y también del FRAGMENTO: el flujo
+      // implícito de OAuth devuelve `#access_token=…`. Se reescriben a
+      // mano (no con `queryParameters`) para no tocar el orden, los
+      // repetidos ni la codificación de lo que no es secreto.
+      final query = uri.hasQuery ? _redactPairs(uri.query) : null;
+      final fragment = uri.hasFragment && uri.fragment.contains('=')
+          ? _redactPairs(uri.fragment)
+          : null;
+      // `https://usuario:contraseña@host`: el usuario se queda, la
+      // contraseña no.
+      final info = uri.userInfo;
+      final colon = info.indexOf(':');
+      final userInfo =
+          colon == -1 ? null : '${info.substring(0, colon)}:$_encodedMarker';
+      // Un JWT como segmento de ruta (`/reset/<jwt>`, links mágicos).
+      final segments = uri.pathSegments;
+      final jwtInPath = segments.any(_jwtSegment.hasMatch);
+      final changed = (query != null && query != uri.query) ||
+          (fragment != null && fragment != uri.fragment) ||
+          userInfo != null ||
+          jwtInPath;
+      if (!changed) return uri;
       return uri.replace(
-        queryParameters: {
-          for (final MapEntry(:key, :value) in all.entries)
-            key: RedactionPolicy.isSecretKey(key)
-                ? [for (final _ in value) RedactionPolicy.redactedMarker]
-                : value,
-        },
+        query: query,
+        fragment: fragment,
+        userInfo: userInfo,
+        pathSegments: jwtInPath
+            ? segments.map(
+                (seg) => _jwtSegment.hasMatch(seg)
+                    ? RedactionPolicy.redactedMarker
+                    : seg,
+              )
+            : null,
       );
     }
     final segments = uri.pathSegments;
@@ -479,6 +503,40 @@ class _SpyRequest implements HttpClientRequest {
             },
     );
   }
+
+  static final _encodedMarker =
+      Uri.encodeQueryComponent(RedactionPolicy.redactedMarker);
+  static final _jwtSegment = RegExp(r'^eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]*$');
+
+  /// `a=1&token=x&b=2` → `a=1&token=█redactado█&b=2` (codificado: va
+  /// dentro de un [Uri]; [_urlText] lo deja legible). Lo que no es secreto
+  /// queda byte a byte igual.
+  static String _redactPairs(String pairs) => pairs.split('&').map((pair) {
+        final eq = pair.indexOf('=');
+        final rawKey = eq == -1 ? pair : pair.substring(0, eq);
+        final String key;
+        try {
+          key = Uri.decodeQueryComponent(rawKey);
+        } on Object {
+          return pair;
+        }
+        return eq != -1 && RedactionPolicy.isSecretKey(key)
+            ? '$rawKey=$_encodedMarker'
+            : pair;
+      }).join('&');
+
+  /// La URL redactada como texto, con el marcador legible
+  /// (`token=█redactado█`, no `token=%E2%96%88redactado%E2%96%88`): es lo
+  /// que lee quien depura en el replay y en el cURL.
+  static String _urlText(Uri uri, RedactionPolicy redaction) => _redactUrl(
+        uri,
+        redaction,
+      ).toString().replaceAll(_encodedMarkerRe, RedactionPolicy.redactedMarker);
+
+  // Uri codifica el marcador con `%E2%96%88` (mayúsculas o minúsculas
+  // según por dónde entró).
+  static final _encodedMarkerRe =
+      RegExp('%E2%96%88redactado%E2%96%88', caseSensitive: false);
 
   /// Un segmento de ruta con forma de dato personal → marcador (regla de
   /// [RedactionPolicy.personalMarker], compartida con los labels de taps

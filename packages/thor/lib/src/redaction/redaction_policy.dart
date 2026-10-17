@@ -143,16 +143,26 @@ class RedactionPolicy {
     'pin',
     'nip',
     'pwd',
+    'pass',
     'passwd',
     'otp',
     'cvc',
+    // No `auth` a secas: suele ser un OBJETO (`{"auth": {"method": …}}`)
+    // que se perdería entero; su token cae por su propia clave o por JWT.
+    'authentication',
+    'sig',
   };
 
   // `token` cubre access/refresh/id/x-auth-token; `jwt` y `bearer` los
-  // campos que guardan el token con otro nombre.
+  // campos que guardan el token con otro nombre. `signature` y
+  // `access_key`: URLs firmadas (S3 `X-Amz-Signature`, `aws_access_key_id`)
+  // que dan acceso a quien las tenga. `session_id`: en muchos backends
+  // (JSESSIONID, PHPSESSID) ES la credencial, igual que la cookie.
   static final _secretFragment = RegExp(
-    'password|contrase|secret|token|authorization|cookie|api_?key|cvv|cvc|'
-    'card_?number|tarjeta|private_?key|jwt|bearer|credential',
+    'password|contrase|passcode|secret|token|authorization|cookie|'
+    'api_?key|access_?key|subscription_?key|signature|session_?id|'
+    'cvv|cvc|security_?code|card_?number|credit_?card|cc_?num|tarjeta|'
+    'private_?key|jwt|bearer|credential|otp_?code',
   );
 
   /// Copia de [value] (JSON: mapas, listas, primitivos) donde el valor de
@@ -235,24 +245,67 @@ class RedactionPolicy {
   // de la regex tardaba segundos en un `print` de 2000 caracteres con
   // guiones, en el hilo de UI.
   static final _pairKey = RegExp(
-    r"""(?<![\w\-ñÑ])(["']?)([\w\-ñÑ]+)\1(\s*[:=]\s*)"""
+    r"""(?<![\w\-ñÑ])(\\?["']?)([\w\-ñÑ]+)\1(\s*[:=]\s*)"""
     r'(?:(Bearer|Basic|Token)\s+)?',
     caseSensitive: false,
   );
-  static final _pairValue =
-      RegExp(r"""("(?:[^"\\]|\\.)*"|'[^']*'|[^\s,;&)}\]"']+)""");
+  // El valor: `\"…\"` (JSON dentro de un string JSON: un `print` de
+  // `jsonEncode` o un cuerpo cortado), `"…"`, `'…'` o una palabra. Una
+  // comilla SIN cerrar llega hasta el final: es un cuerpo cortado por el
+  // tope (`"password":"hun`) y cortar ahí no debe dejar el pedazo.
+  static final _pairValue = RegExp(
+    r'(\\"(?:[^"\\]|\\[^"])*(?:\\"|$)|"(?:[^"\\]|\\.)*(?:"|$)|'
+    r"""'[^']*(?:'|$)|[^\s,;&)}\]"']+)""",
+  );
+  static final _cookieValue = RegExp(r"""[^\s"'\\][^\r\n,}\]"']*""");
   static final _bearer =
       RegExp(r'\b(Bearer)\s+[A-Za-z0-9\-._~+/]{8,}=*', caseSensitive: false);
   static final _basic = RegExp(r'\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})');
   static final _base64Hint = RegExp('[0-9+/=]');
 
+  // Un JWT suelto (`print(token)`, una ruta `/reset/<jwt>`): su cabecera
+  // siempre es JSON en base64url, así que empieza con `eyJ`. Sin clave al
+  // lado no hay otra forma de reconocerlo.
+  static final _jwt = RegExp(r'\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]*');
+
+  // Contraseña dentro de una URL (`https://user:pass@host`), p.ej. en el
+  // toString de un SocketException.
+  static final _userInfo =
+      RegExp(r'(\b[a-z][\w+.-]*://[^\s/:@?#]*):[^\s/@?#]+@');
+
+  // Número de tarjeta suelto: 13–19 dígitos (con espacios o guiones) que
+  // empiezan como una marca (2–6: Visa, MC, Amex, Discover) y pasan Luhn.
+  // El prefijo y Luhn dejan pasar teléfonos (10 dígitos), ids y epochs en
+  // ms (empiezan con 1).
+  static final _card = RegExp(r'(?<![\d-])[2-6](?:[ -]?\d){12,18}(?![\d])');
+
+  static bool _luhn(String candidate) {
+    final digits = candidate.replaceAll(_nonDigit, '');
+    if (digits.length < 13 || digits.length > 19) return false;
+    var sum = 0;
+    for (var i = 0; i < digits.length; i++) {
+      var d = digits.codeUnitAt(digits.length - 1 - i) - 48;
+      if (i.isOdd) {
+        d *= 2;
+        if (d > 9) d -= 9;
+      }
+      sum += d;
+    }
+    return sum % 10 == 0;
+  }
+
   /// [text] sin secretos evidentes: el valor de toda clave de secreto
-  /// ([isSecretKey]: `password=…`, `"token":"…"`, `api_key: …`) y los
-  /// tokens de `Bearer …` / `Basic …` sueltos se vuelven
-  /// [redactedMarker]. Para texto libre (logs, labels) donde no hay mapa
-  /// que pasar por la allowlist.
+  /// ([isSecretKey]: `password=…`, `"token":"…"`, el JSON escapado
+  /// dentro de otro string, `api_key: …`, todas las cookies de
+  /// `Cookie: a=1; b=2`), los tokens de `Bearer …` / `Basic …`, los JWT
+  /// sueltos, la contraseña de `https://usuario:contraseña@host` y los
+  /// números de tarjeta (Luhn) se vuelven [redactedMarker]. Para texto
+  /// libre (logs, labels) donde no hay mapa que pasar por la allowlist.
   static String scrubSecrets(String text) => _scrubPairs(text)
       .replaceAllMapped(_bearer, (m) => '${m[1]} $redactedMarker')
+      .replaceAll(_jwt, redactedMarker)
+      .replaceAllMapped(_userInfo, (m) => '${m[1]}:$redactedMarker@')
+      .replaceAllMapped(_card, (m) => _luhn(m[0]!) ? redactedMarker : m[0]!)
       // "Basic" es palabra común: solo si lo que sigue parece base64.
       .replaceAllMapped(
         _basic,
@@ -266,11 +319,19 @@ class RedactionPolicy {
       if (m.start < last) continue;
       final key = m[2]!;
       if (!isSecretKey(key)) continue;
-      final v = _pairValue.matchAsPrefix(text, m.end);
+      // Cookie: `a=1; b=2` son VARIAS cookies; el valor llega hasta el fin
+      // de la entrada, no hasta el primer `;` (si no, `b=2` pasaba).
+      final v = (key.toLowerCase().contains('cookie')
+              ? _cookieValue.matchAsPrefix(text, m.end)
+              : null) ??
+          _pairValue.matchAsPrefix(text, m.end);
       if (v == null) continue;
       final value = v[0]!;
-      final quote =
-          value.startsWith('"') || value.startsWith("'") ? value[0] : '';
+      final quote = value.startsWith(r'\"')
+          ? r'\"'
+          : value.startsWith('"') || value.startsWith("'")
+              ? value[0]
+              : '';
       final scheme = m[4] == null ? '' : '${m[4]} ';
       (out ??= StringBuffer())
         ..write(text.substring(last, m.start))

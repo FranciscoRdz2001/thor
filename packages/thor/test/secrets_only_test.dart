@@ -131,6 +131,115 @@ void main() {
     });
   });
 
+  // Intentos de colar un secreto por el default (revisión adversarial).
+  group('secretsOnly: fugas cerradas', () {
+    test('JSON dentro de un string JSON (print de jsonEncode)', () {
+      final out = policy.scrub(
+        jsonEncode({
+          'query': 'mutation { login(password: "hunter2") }',
+          'data': jsonEncode({'token': 'tk-123', 'sku': 'A1'}),
+        }),
+      );
+      expect(out, isNot(contains('hunter2')));
+      expect(out, isNot(contains('tk-123')));
+      expect(out, contains('A1'));
+    });
+
+    test('valor cortado por el tope (comilla sin cerrar)', () {
+      expect(
+        policy.scrub('{"user":"ana","password":"hunt'),
+        '{"user":"ana","password":"$m"',
+      );
+    });
+
+    test('Cookie con varias cookies: caen todas', () {
+      expect(policy.scrub('cookie: sid=abc; theme=x'), 'cookie: $m');
+      expect(
+        policy.scrub('{cookie: sid=abc; csrf=zz, accept: */*}'),
+        '{cookie: $m, accept: */*}',
+      );
+    });
+
+    test('JWT suelto, contraseña en URL y tarjeta en texto libre', () {
+      const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.'
+          'dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+      expect(policy.scrub('token guardado $jwt ok'), 'token guardado $m ok');
+      expect(
+        policy.scrub('SocketException: https://ana:pw123@h.io/x'),
+        'SocketException: https://ana:$m@h.io/x',
+      );
+      expect(
+        policy.scrub('pagó con 4111 1111 1111 1111 el 55 1234 5678'),
+        'pagó con $m el 55 1234 5678',
+      );
+      // Ni ids largos ni epochs en ms (no empiezan como tarjeta / no
+      // pasan Luhn).
+      expect(
+        policy.scrub('ts=1697568000000 pedido 4111111111111112'),
+        'ts=1697568000000 pedido 4111111111111112',
+      );
+    });
+
+    test('claves de secreto con otros nombres', () {
+      expect(
+        policy.redactValue({
+          'pass': 'a',
+          'otpCode': '1',
+          'securityCode': '2',
+          'ccNumber': '3',
+          'credit_card': '4',
+          'aws_access_key_id': '5',
+          'X-Amz-Signature': '6',
+          'JSESSIONID': '7',
+          'auth': {'method': 'google'},
+        }),
+        {
+          'pass': m,
+          'otpCode': m,
+          'securityCode': m,
+          'ccNumber': m,
+          'credit_card': m,
+          'aws_access_key_id': m,
+          'X-Amz-Signature': m,
+          'JSESSIONID': m,
+          // Un objeto `auth` conserva su forma; sus secretos caen por clave.
+          'auth': {'method': 'google'},
+        },
+      );
+      expect(
+        policy
+            .redactFlatMap({
+              'Authentication': 'abc',
+              'Ocp-Apim-Subscription-Key': 'k',
+              'x-session-id': 's',
+            })
+            .values
+            .toSet(),
+        {m},
+      );
+    });
+
+    test('URL: fragmento OAuth, usuario:contraseña y JWT en la ruta', () {
+      String clean(String url) =>
+          ThorNetworkCapture.redactUrl(Uri.parse(url), policy).toString();
+      final oauth = clean(
+        'https://ana:pw123@h.io/cb?x=1#access_token=at-9&state=st&id_token=it',
+      );
+      for (final secret in ['pw123', 'at-9', 'id_token=it']) {
+        expect(oauth, isNot(contains(secret)), reason: secret);
+      }
+      expect(oauth, contains('ana:'));
+      expect(oauth, contains('state=st'));
+      expect(
+        clean('https://h.io/reset/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc'),
+        isNot(contains('eyJ')),
+      );
+      // Sin secretos la URL no se toca (orden, repetidos, codificación).
+      const plain = 'https://h.io/a?b=1&a=2&b=3&q=leche%20light';
+      expect(clean(plain), plain);
+    });
+  });
+
   group('captura de red con la política por defecto', () {
     late HttpServer server;
     late Uri base;
@@ -230,6 +339,9 @@ void main() {
       }
       expect(p['url'], contains('/clientes/ana@mail.com'));
       expect(p['url'], contains('tienda=431'));
+      // El marcador se lee tal cual, no `%E2%96%88…`.
+      expect(p['url'], contains('token=$m'));
+      expect(p['curl'], contains('token=$m'));
       expect((p['requestHeaders']! as Map)['x-app-version'], '3.2.1');
       expect((p['responseHeaders']! as Map)['x-request-id'], 'req-42');
       expect(p['requestBody'], {
