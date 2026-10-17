@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data' show BytesBuilder;
 
 import 'package:clock/clock.dart';
+import 'package:meta/meta.dart';
 
 import 'package:thor/src/model/event.dart';
 import 'package:thor/src/network/raw_network_store.dart';
@@ -43,6 +44,12 @@ class ThorNetworkCapture {
     final s = url.toString();
     return ignoredPrefixes.any(s.startsWith);
   }
+
+  /// La URL tal como la graba Thor (query por allowlist, ruta sin datos
+  /// personales). Expuesta para tests.
+  @visibleForTesting
+  static Uri redactUrl(Uri uri, RedactionPolicy redaction) =>
+      _SpyRequest._redactUrl(uri, redaction);
 
   /// Instala la captura. Idempotente.
   static void install() {
@@ -403,8 +410,7 @@ class _SpyRequest implements HttpClientRequest {
     final parts = ['curl', '-X', inner.method];
     headers.forEach((k, v) => parts.add('-H ${_sq('$k: $v')}'));
     if (_requestBody.isNotEmpty) {
-      final body =
-          utf8.decode(_requestBody.toBytes(), allowMalformed: true);
+      final body = utf8.decode(_requestBody.toBytes(), allowMalformed: true);
       parts.add('-d ${_sq(body)}');
     }
     parts.add(_sq(inner.uri.toString()));
@@ -415,18 +421,49 @@ class _SpyRequest implements HttpClientRequest {
   /// con apóstrofos rompía el comando generado.
   static String _sq(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
-  static Uri _redactUrl(Uri uri, RedactionPolicy redaction) =>
-      uri.queryParameters.isEmpty
-          ? uri
-          : uri.replace(
-              queryParameters: {
-                for (final MapEntry(:key, :value)
-                    in uri.queryParameters.entries)
-                  key: redaction.isKeyAllowed(key)
-                      ? value
-                      : RedactionPolicy.redactedMarker,
-              },
-            );
+  /// Redacta la URL: query por allowlist y, en la RUTA, los segmentos que
+  /// suelen ser datos de la persona. Bug real (una app de producción):
+  /// `/cache/profile/<email>` viajaba tal cual porque solo se limpiaba la
+  /// query. Los reemplazos son marcadores legibles que mantienen la URL
+  /// válida y agrupable (`/profile/:email`).
+  static Uri _redactUrl(Uri uri, RedactionPolicy redaction) {
+    final segments = uri.pathSegments;
+    final cleanPath = segments.any((s) => redactPathSegment(s) != s);
+    if (uri.queryParameters.isEmpty && !cleanPath) return uri;
+    return uri.replace(
+      pathSegments: cleanPath ? segments.map(redactPathSegment) : null,
+      queryParameters: uri.queryParameters.isEmpty
+          ? null
+          : {
+              for (final MapEntry(:key, :value) in uri.queryParameters.entries)
+                key: redaction.isKeyAllowed(key)
+                    ? value
+                    : RedactionPolicy.redactedMarker,
+            },
+    );
+  }
+
+  static final _longNumber = RegExp(r'^\+?[\d\-. ]{7,}$');
+  static final _token = RegExp(r'^[A-Za-z0-9_\-=.]{20,}$');
+  static final _hasDigit = RegExp(r'\d');
+  static final _hasLetter = RegExp('[A-Za-z]');
+
+  /// Un segmento de ruta con forma de dato personal → marcador:
+  /// email → `:email`; número de 7+ dígitos (teléfono, id de cliente,
+  /// tarjeta) → `:n`; token largo con letras y dígitos (hash, uuid, jwt)
+  /// → `:token`. Lo demás pasa igual.
+  static String redactPathSegment(String segment) {
+    final s = Uri.decodeComponent(segment);
+    if (s.contains('@')) return ':email';
+    if (_longNumber.hasMatch(s) &&
+        s.replaceAll(RegExp(r'\D'), '').length >= 7) {
+      return ':n';
+    }
+    if (_token.hasMatch(s) && _hasDigit.hasMatch(s) && _hasLetter.hasMatch(s)) {
+      return ':token';
+    }
+    return segment;
+  }
 
   static Map<String, String> _headersToMap(HttpHeaders headers) {
     final map = <String, String>{};
