@@ -73,4 +73,31 @@ void main() {
       expect(out.keys, containsAll(<String>['1', 'true']));
     });
   });
+
+  group('scrubText (labels de UI)', () {
+    test('emails, números largos y tokens en cualquier posición', () {
+      expect(
+        RedactionPolicy.scrubText('Ana Pérez ana.perez@mail.com'),
+        'Ana Pérez :email',
+      );
+      expect(RedactionPolicy.scrubText('Tel 55 1234 5678'), 'Tel :n');
+      expect(RedactionPolicy.scrubText('Pedido #10293847'), 'Pedido #:n');
+      expect(
+        RedactionPolicy.scrubText('ref 9971d011677f4c0ea8336b6d37d52da4.'),
+        'ref :token',
+      );
+    });
+
+    test('copy normal, precios y números cortos pasan igual', () {
+      for (final s in ['Pagar', r'Total $1,234.50', 'Pedido 123', '12:30']) {
+        expect(RedactionPolicy.scrubText(s), s);
+      }
+    });
+
+    test('misma regla que los segmentos de URL', () {
+      expect(RedactionPolicy.personalMarker('a@b.c'), ':email');
+      expect(RedactionPolicy.personalMarker('+52-55-1234-5678'), ':n');
+      expect(RedactionPolicy.personalMarker('orders'), isNull);
+    });
+  });
 }

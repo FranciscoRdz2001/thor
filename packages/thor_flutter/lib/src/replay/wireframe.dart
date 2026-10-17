@@ -5,6 +5,7 @@ import 'package:flutter/cupertino.dart' show CupertinoTextField;
 import 'package:flutter/material.dart' show TextField;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
+import 'package:thor/thor.dart' show RedactionPolicy;
 import 'package:thor_flutter/src/visible_tree.dart';
 
 /// Excluye su subárbol del replay: no se dibuja ni se recorre. Para zonas
@@ -15,6 +16,27 @@ class ThorReplayIgnore extends StatelessWidget {
   const ThorReplayIgnore({required this.child, super.key});
 
   /// Lo que se muestra en la app pero no en el replay.
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => child;
+}
+
+/// Marca su subárbol como COPY de la interfaz (títulos, botones, menús
+/// escritos por la app): sus textos viajan legibles en el replay aunque
+/// `maskText` esté encendido, y los taps dentro conservan su label.
+///
+/// Es la allowlist explícita del enmascarado: por defecto todo texto se
+/// enmascara porque el SDK no distingue "Pagar" de "Ana Pérez". Envolver
+/// solo lo que el desarrollador sabe que es copy fijo — nunca una celda
+/// con datos del usuario. Aun así, emails, números largos y tokens se
+/// reemplazan por su marcador (`:email`, `:n`, `:token`): un texto
+/// interpolado por error no fuga lo más obvio.
+class ThorReplayShowText extends StatelessWidget {
+  /// Muestra los textos de [child] en el replay.
+  const ThorReplayShowText({required this.child, super.key});
+
+  /// Subárbol cuyos textos son copy de la interfaz.
   final Widget child;
 
   @override
@@ -97,11 +119,20 @@ class Wireframe {
 /// sigue siendo el primero, para visores que no lo entienden.
 class WireframeBuilder {
   /// Crea un recorrido de una sola vez.
-  WireframeBuilder({required this.maskText, this.imageUrls = false});
+  WireframeBuilder({
+    required this.maskText,
+    this.imageUrls = false,
+    this.unmaskedTexts = const {},
+  });
 
   /// Texto enmascarado: conserva espacios y largo, cambia todo lo demás por
   /// `•`. La forma del texto basta para reconocer la pantalla.
   final bool maskText;
+
+  /// Textos exactos que son copy de la app (p. ej. sus cadenas de l10n):
+  /// viajan legibles aunque [maskText] esté encendido. Coincidencia exacta
+  /// del texto completo del párrafo — "Pagar" sí, "Pagar a Ana" no.
+  final Set<String> unmaskedTexts;
 
   /// Incluye la URL de cada imagen. Apagado por defecto: una imagen viaja
   /// como un rectángulo — nada pesado sale del dispositivo.
@@ -139,6 +170,7 @@ class WireframeBuilder {
     var next = ctx;
     final widget = element.widget;
     if (widget is ThorReplayIgnore) return;
+    if (widget is ThorReplayShowText) next = next.copyWith(showText: true);
     if (widget is Image) next = next.copyWith(url: _imageUrl(widget.image));
     // El hint lo escribe la app, no el usuario: su LARGO dibuja el campo
     // vacío como en el dispositivo. El texto tecleado jamás viaja.
@@ -180,7 +212,13 @@ class WireframeBuilder {
     // Los hijos se guardan en coordenadas de contenido: se les suma el
     // offset actual en su eje.
     final shift = ctx.shift + (axis == 0 ? Offset(0, px) : Offset(px, 0));
-    return _Ctx(vp: id, shift: shift, url: ctx.url, hint: ctx.hint);
+    return _Ctx(
+      vp: id,
+      shift: shift,
+      url: ctx.url,
+      hint: ctx.hint,
+      showText: ctx.showText,
+    );
   }
 
   /// ClipRRect/ClipOval no pintan nada, pero dan la forma: una tarjeta o
@@ -243,7 +281,7 @@ class WireframeBuilder {
         elevation: ro.elevation,
       );
     } else if (ro is RenderParagraph) {
-      _paragraph(ro, r, vp);
+      _paragraph(ro, r, vp, ctx.showText);
     } else if (ro is RenderImage) {
       _image(r, ctx, ctx.url, _clipRadius(r, ctx));
     } else if (ro is RenderEditable) {
@@ -437,7 +475,7 @@ class WireframeBuilder {
     return h % 100 == 0 ? h ~/ 100 : h / 100;
   }
 
-  void _paragraph(RenderParagraph ro, Rect r, int vp) {
+  void _paragraph(RenderParagraph ro, Rect r, int vp, bool showText) {
     final span = ro.text;
     final text = span.toPlainText();
     if (text.trim().isEmpty) return;
@@ -464,16 +502,23 @@ class WireframeBuilder {
       size,
       (style?.fontWeight ?? FontWeight.w400).value,
       ro.textAlign.index,
-      if (maskText) _mask(text) else text,
+      if (!maskText)
+        text
+      else if (showText || unmaskedTexts.contains(text))
+        // Copy declarado: legible, pero sin lo que tenga forma de dato.
+        RedactionPolicy.scrubText(text)
+      else
+        mask(text),
     ]);
   }
 
-  /// Texto enmascarado = largo de cada palabra (`[10, 4, 8]`): conserva
-  /// la forma para reconocer la pantalla sin un solo carácter real, y pesa
-  /// menos que el texto mismo.
   static final _spaces = RegExp(r'\s+');
 
-  static List<int> _mask(String text) => [
+  /// Texto enmascarado = largo de cada palabra (`[10, 4, 8]`): conserva
+  /// la forma para reconocer la pantalla sin un solo carácter real, y pesa
+  /// menos que el texto mismo. El replay lo usa también para los labels
+  /// de taps enmascarados.
+  static List<int> mask(String text) => [
         for (final word in text.split(_spaces))
           if (word.isNotEmpty) word.runes.length,
       ];
@@ -586,6 +631,7 @@ class _Ctx {
     this.url,
     this.clip,
     this.hint,
+    this.showText = false,
   });
 
   final int vp;
@@ -598,12 +644,16 @@ class _Ctx {
   /// Largo del hint del campo de texto ancestro.
   final int? hint;
 
-  _Ctx copyWith({String? url, _Clip? clip, int? hint}) => _Ctx(
+  /// Dentro de un [ThorReplayShowText].
+  final bool showText;
+
+  _Ctx copyWith({String? url, _Clip? clip, int? hint, bool? showText}) => _Ctx(
         vp: vp,
         shift: shift,
         url: url ?? this.url,
         clip: clip ?? this.clip,
         hint: hint ?? this.hint,
+        showText: showText ?? this.showText,
       );
 }
 

@@ -1,6 +1,8 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/replay/wireframe.dart'
+    show ThorReplayIgnore, ThorReplayShowText;
 import 'package:thor_flutter/src/visible_tree.dart';
 
 /// Captura de interacciones sin instrumentar la app.
@@ -12,6 +14,13 @@ import 'package:thor_flutter/src/visible_tree.dart';
 ///
 /// PII: de los campos de texto NUNCA se captura el contenido — solo el hecho
 /// de que se tocó el campo y su etiqueta/hint.
+///
+/// El label va completo al journal/reporte local (es lo que hace legible un
+/// reporte de QA). Para el replay, que SÍ sale del dispositivo, el evento
+/// lleva además de dónde salió el label: `copy: true` si es copy de la
+/// interfaz (botón de alto nivel, tooltip, hint, ícono, o dentro de un
+/// [ThorReplayShowText]) y `hidden: true` si el tap cayó en un
+/// [ThorReplayIgnore]. El replay enmascara todo lo demás.
 ///
 /// De pasada hace la retro-corrección de pantalla: si el ancestro tipo
 /// página del tap difiere de lo que resolvió el NavigatorObserver, gana el
@@ -33,6 +42,18 @@ class InteractionCapture {
     'TextField', 'TextFormField', 'Checkbox', 'Switch', 'Radio', 'Slider',
     'Chip', 'ActionChip', 'ChoiceChip', 'FilterChip', 'BackButton',
     'CloseButton', 'SegmentedButton', 'CupertinoButton',
+  };
+
+  /// Botones cuyo texto es COPY de la interfaz ("Pagar", "Guardar"): el
+  /// desarrollador lo escribió para la acción, casi nunca es un dato.
+  /// Fuera a propósito: ListTile y sus variantes (su título suele ser el
+  /// dato de la fila: un nombre, una dirección, un pedido), chips (tags,
+  /// contactos), DropdownButton (muestra el VALOR elegido) y
+  /// PopupMenuButton (idem). Esos se enmascaran en el replay.
+  static const _copyTypes = {
+    'ElevatedButton', 'TextButton', 'OutlinedButton', 'FilledButton',
+    'IconButton', 'FloatingActionButton', 'BackButton', 'CloseButton',
+    'SegmentedButton', 'CupertinoButton',
   };
 
   /// Interactivos primitivos: solo se reportan si ningún alto nivel
@@ -84,6 +105,8 @@ class InteractionCapture {
         if (hit.label != null) 'label': hit.label,
         if (hit.keyValue != null) 'key': hit.keyValue,
         'isTextInput': hit.isTextInput,
+        if (hit.labelIsCopy) 'copy': true,
+        if (hit.hidden) 'hidden': true,
       });
     } on Object {
       // La captura de interacciones jamás puede tirar la app que observa.
@@ -102,9 +125,18 @@ class InteractionCapture {
 
     Element? bestHighLevel;
     Element? bestPrimitive;
+    // Marcas de privacidad del ancestro de cada candidato (ver [_Mark]).
+    var highLevelMark = _Mark.none;
+    var primitiveMark = _Mark.none;
     String? pageClass;
 
-    void visit(Element element) {
+    void visit(Element element, _Mark inherited) {
+      final widget = element.widget;
+      final mark = switch (widget) {
+        ThorReplayIgnore() => _Mark.hidden,
+        ThorReplayShowText() when inherited != _Mark.hidden => _Mark.show,
+        _ => inherited,
+      };
       final render = element.renderObject;
       if (render is RenderBox && render.hasSize && render.attached) {
         final Offset local;
@@ -119,28 +151,34 @@ class InteractionCapture {
         final typeName = _stripGenerics(element.widget.runtimeType.toString());
         if (_highLevelTypes.contains(typeName)) {
           bestHighLevel = element; // el más profundo de su nivel gana
+          highLevelMark = mark;
         } else if (_primitiveTypes.contains(typeName)) {
           bestPrimitive = element;
+          primitiveMark = mark;
         }
         if (VisibleTree.isScreenName(typeName)) pageClass = typeName;
       }
       // Solo lo pintado: un toque nunca cae en una tab oculta.
-      VisibleTree.visitChildren(element, visit);
+      VisibleTree.visitChildren(element, (child) => visit(child, mark));
     }
 
-    rootElement.visitChildElements(visit);
+    rootElement.visitChildElements((child) => visit(child, _Mark.none));
 
     // Alto nivel manda: el GestureDetector interno de un botón es ruido.
     final target = bestHighLevel ?? bestPrimitive;
     if (target == null) return null;
+    final mark = bestHighLevel != null ? highLevelMark : primitiveMark;
 
     final type = _stripGenerics(target.widget.runtimeType.toString());
+    final label = _labelOf(target, copyText: _copyTypes.contains(type));
     return _Hit(
       widgetType: type,
-      label: _labelOf(target),
+      label: label?.text,
       keyValue: _keyOf(target.widget.key),
       isTextInput: type == 'TextField' || type == 'TextFormField',
       pageClass: pageClass,
+      labelIsCopy: mark == _Mark.show || (label?.copy ?? false),
+      hidden: mark == _Mark.hidden,
     );
   }
 
@@ -157,38 +195,54 @@ class InteractionCapture {
 
   /// Etiqueta legible del elemento: hint de un campo, texto del primer
   /// `Text` descendiente, o tooltip. Truncada — es una etiqueta, no datos.
-  static String? _labelOf(Element element) {
+  ///
+  /// `copy` dice si es copy de la interfaz: hint/label de decoración,
+  /// tooltip e ícono lo son siempre (los escribe la app); el texto de un
+  /// `Text` solo si [copyText] (botón de alto nivel) o si está dentro de
+  /// un [ThorReplayShowText] bajo el elemento tocado.
+  static ({String text, bool copy})? _labelOf(
+    Element element, {
+    required bool copyText,
+  }) {
     final widget = element.widget;
 
     // Campo de texto: SOLO metadata de decoración, jamás el contenido.
     if (widget is TextField) {
       final d = widget.decoration;
-      return d?.labelText ?? d?.hintText;
+      final text = d?.labelText ?? d?.hintText;
+      return text == null ? null : (text: text, copy: true);
     }
 
     String? text;
-    void findText(Element e) {
+    var copy = false;
+    void findText(Element e, {required bool inShow}) {
       if (text != null) return;
       final w = e.widget;
+      final show = inShow || w is ThorReplayShowText;
       if (w is Text && w.data != null && w.data!.trim().isNotEmpty) {
         text = w.data!.trim();
+        copy = copyText || show;
         return;
       }
       if (w is Tooltip) {
         text = w.message;
+        copy = true;
         return;
       }
       if (w is Icon && w.icon != null) {
-        text ??= 'icono:${w.icon}';
+        text = 'icono:${w.icon}';
+        copy = true;
       }
-      e.visitChildElements(findText);
+      e.visitChildElements((child) => findText(child, inShow: show));
     }
 
-    element.visitChildElements(findText);
-    if (text != null && text!.length > 60) {
-      text = '${text!.substring(0, 60)}…';
-    }
-    return text;
+    element.visitChildElements((child) => findText(child, inShow: false));
+    final found = text;
+    if (found == null) return null;
+    return (
+      text: found.length > 60 ? '${found.substring(0, 60)}…' : found,
+      copy: copy,
+    );
   }
 }
 
@@ -202,6 +256,8 @@ class _Hit {
     this.label,
     this.keyValue,
     this.pageClass,
+    this.labelIsCopy = false,
+    this.hidden = false,
   });
 
   final String widgetType;
@@ -209,4 +265,14 @@ class _Hit {
   final String? keyValue;
   final bool isTextInput;
   final String? pageClass;
+
+  /// El label es copy de la interfaz: el replay lo puede mandar legible.
+  final bool labelIsCopy;
+
+  /// El tap cayó dentro de un [ThorReplayIgnore].
+  final bool hidden;
 }
+
+/// Marca de privacidad heredada de los ancestros durante el recorrido.
+/// `hidden` (ThorReplayIgnore) gana sobre `show` (ThorReplayShowText).
+enum _Mark { none, show, hidden }

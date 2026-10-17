@@ -24,10 +24,25 @@ class ThorReplayConfig {
     this.maxGap = const Duration(milliseconds: 1200),
     this.snapshotBudget = const Duration(milliseconds: 8),
     this.apiKey,
+    this.unmaskedTexts = const {},
   });
 
   /// Enmascara todo el texto (default). Apagar solo en entornos propios.
+  ///
+  /// Aplica también a los labels de taps (`ev` de interacción): un tap en
+  /// una fila que muestra "Ana Pérez" no debe mandar "Ana Pérez" mientras
+  /// la pantalla lo tapa. Pasan legibles solo los que son copy de la
+  /// interfaz (botones de alto nivel, tooltips, hints, íconos, o dentro de
+  /// un `ThorReplayShowText`). Encendido o no, de todo label (y Key) se
+  /// quitan emails, números largos y tokens.
   final bool maskText;
+
+  /// Textos exactos que son copy de la app y viajan legibles aunque
+  /// [maskText] esté encendido — típicamente las cadenas de su l10n
+  /// (`{'Pagar', 'Mis pedidos', …}`). Coincidencia exacta del texto
+  /// completo: en pantalla y en labels de taps. Para marcar una zona
+  /// entera, `ThorReplayShowText`.
+  final Set<String> unmaskedTexts;
 
   /// Manda la URL de cada imagen. Apagado: la imagen es un rectángulo.
   final bool imageUrls;
@@ -106,7 +121,9 @@ class ThorReplayStats {
 /// - `{"t":"user","ts":…,"id":…}` — usuario fijado/cambiado con
 ///   `Thor.setUser` (`id: null` = se limpió). Si ya se conocía al
 ///   arrancar, también va como `uid` en el meta.
-/// - `{"t":"ev",…}` — evento de Thor en versión ligera.
+/// - `{"t":"ev",…}` — evento de Thor en versión ligera. En un tap, `p.l`
+///   es el label (string) o, enmascarado, la lista de largos de palabra
+///   como el texto en pantalla; `p.k` la Key, solo si el label es legible.
 ///
 /// Subida en dos fases: se mandan los registros sin bloques; el servidor
 /// contesta `{"missing": [...]}` y solo esos bloques se mandan después.
@@ -501,6 +518,7 @@ class ThorReplay {
       wire = WireframeBuilder(
         maskText: _config.maskText,
         imageUrls: _config.imageUrls,
+        unmaskedTexts: _config.unmaskedTexts,
       ).build();
       if (wire == null) return;
       (:vps, :refs, :blocks) = split(wire.ops);
@@ -674,11 +692,7 @@ class ThorReplay {
     }
     final slim = switch (event.kind) {
       ThorEventKind.navigation => {'a': p['action'], 'to': p['to']},
-      ThorEventKind.interaction => {
-          'g': p['gesture'],
-          'l': p['label'],
-          'w': p['widget'],
-        },
+      ThorEventKind.interaction => _slimInteraction(p),
       ThorEventKind.error => {
           'type': p['type'],
           'msg': p['message'],
@@ -707,6 +721,39 @@ class ThorReplay {
       _markEnabled();
       unawaited(flush());
     }
+  }
+
+  /// Tap: el label sigue la misma regla que el texto en pantalla.
+  ///
+  /// - Dentro de `ThorReplayIgnore`: ni label ni Key (la zona no existe
+  ///   para el replay).
+  /// - Copy de la interfaz (`copy: true` de InteractionCapture), texto en
+  ///   [ThorReplayConfig.unmaskedTexts] o `maskText` apagado: legible.
+  /// - Lo demás (ListTile, InkWell, GestureDetector con texto arbitrario,
+  ///   y los labels del canal semántico, que FUSIONAN el texto de los
+  ///   hijos): largos de palabra, como el texto enmascarado.
+  ///
+  /// Legible o no, se pasa por [RedactionPolicy.scrubText]: un botón
+  /// "Llamar 55 1234 5678" viaja como "Llamar :n". La Key (`k`) solo
+  /// viaja cuando el label es legible: en una lista suele ser el id o el
+  /// nombre del item (`ValueKey(cliente.email)`).
+  Map<String, Object?> _slimInteraction(Map<String, Object?> p) {
+    if (p['hidden'] == true) return {'g': p['gesture'], 'w': p['widget']};
+    final label = p['label'] as String?;
+    final key = p['key'] as String?;
+    final readable = !_config.maskText ||
+        p['copy'] == true ||
+        (label != null && _config.unmaskedTexts.contains(label));
+    return {
+      'g': p['gesture'],
+      'l': label == null
+          ? null
+          : readable
+              ? RedactionPolicy.scrubText(label)
+              : WireframeBuilder.mask(label),
+      'w': p['widget'],
+      if (key != null && readable) 'k': RedactionPolicy.scrubText(key),
+    };
   }
 
   static final _staticAsset = RegExp(

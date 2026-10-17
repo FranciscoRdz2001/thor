@@ -102,6 +102,55 @@ class RedactionPolicy {
         _ => value,
       };
 
+  static final _longNumber = RegExp(r'^\+?[\d\-. ]{7,}$');
+  static final _token = RegExp(r'^[A-Za-z0-9_\-=.]{20,}$');
+  static final _hasDigit = RegExp(r'\d');
+  static final _hasLetter = RegExp('[A-Za-z]');
+  static final _nonDigit = RegExp(r'\D');
+
+  /// Marcador si [word] (una palabra, un segmento de ruta) tiene forma de
+  /// dato personal; `null` si no. email → `:email`; número de 7+ dígitos
+  /// (teléfono, id de cliente, tarjeta) → `:n`; token largo con letras y
+  /// dígitos (hash, uuid, jwt) → `:token`.
+  ///
+  /// Es la MISMA regla para rutas de URL y para textos de UI (labels de
+  /// taps): un solo lugar que endurecer cuando aparezca otro caso.
+  static String? personalMarker(String word) {
+    if (word.contains('@')) return ':email';
+    if (_longNumber.hasMatch(word) &&
+        word.replaceAll(_nonDigit, '').length >= 7) {
+      return ':n';
+    }
+    if (_token.hasMatch(word) &&
+        _hasDigit.hasMatch(word) &&
+        _hasLetter.hasMatch(word)) {
+      return ':token';
+    }
+    return null;
+  }
+
+  static final _emailIn = RegExp(r'[^\s@]+@[^\s@]+');
+  static final _numberIn = RegExp(r'\+?\d[\d\-. ]*\d');
+  static final _longWord = RegExp(r'\S{20,}');
+
+  /// [text] con los datos personales de [personalMarker] reemplazados por
+  /// su marcador, en cualquier posición: `"Ana ana@x.com"` →
+  /// `"Ana :email"`, `"Pedido 55 1234 5678"` → `"Pedido :n"`. Un número
+  /// de teléfono con espacios no es UNA palabra, por eso se busca con
+  /// regex sobre el texto entero y no palabra por palabra. Lo demás
+  /// (nombres propios incluidos) pasa igual: esto es un filtro de forma,
+  /// no un detector de PII — para eso está el enmascarado.
+  static String scrubText(String text) => text
+      .replaceAll(_emailIn, ':email')
+      .replaceAllMapped(
+        _numberIn,
+        (m) => m[0]!.replaceAll(_nonDigit, '').length >= 7 ? ':n' : m[0]!,
+      )
+      .replaceAllMapped(
+        _longWord,
+        (m) => personalMarker(m[0]!) ?? m[0]!,
+      );
+
   /// ¿El valor de esta clave puede pasar en claro?
   bool isKeyAllowed(String key) {
     final k = _normalize(key);

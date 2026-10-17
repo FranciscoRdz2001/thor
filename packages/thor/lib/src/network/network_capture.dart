@@ -443,27 +443,11 @@ class _SpyRequest implements HttpClientRequest {
     );
   }
 
-  static final _longNumber = RegExp(r'^\+?[\d\-. ]{7,}$');
-  static final _token = RegExp(r'^[A-Za-z0-9_\-=.]{20,}$');
-  static final _hasDigit = RegExp(r'\d');
-  static final _hasLetter = RegExp('[A-Za-z]');
-
-  /// Un segmento de ruta con forma de dato personal → marcador:
-  /// email → `:email`; número de 7+ dígitos (teléfono, id de cliente,
-  /// tarjeta) → `:n`; token largo con letras y dígitos (hash, uuid, jwt)
-  /// → `:token`. Lo demás pasa igual.
-  static String redactPathSegment(String segment) {
-    final s = Uri.decodeComponent(segment);
-    if (s.contains('@')) return ':email';
-    if (_longNumber.hasMatch(s) &&
-        s.replaceAll(RegExp(r'\D'), '').length >= 7) {
-      return ':n';
-    }
-    if (_token.hasMatch(s) && _hasDigit.hasMatch(s) && _hasLetter.hasMatch(s)) {
-      return ':token';
-    }
-    return segment;
-  }
+  /// Un segmento de ruta con forma de dato personal → marcador (regla de
+  /// [RedactionPolicy.personalMarker], compartida con los labels de taps
+  /// del replay). Lo demás pasa igual.
+  static String redactPathSegment(String segment) =>
+      RedactionPolicy.personalMarker(Uri.decodeComponent(segment)) ?? segment;
 
   static Map<String, String> _headersToMap(HttpHeaders headers) {
     final map = <String, String>{};
