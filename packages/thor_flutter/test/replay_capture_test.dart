@@ -184,4 +184,18 @@ void main() {
     expect(ThorReplay.fnv('abc'), hasLength(16));
     expect(ThorReplay.fnv('abc'), isNot(ThorReplay.fnv('abd')));
   });
+
+  test('single-pass fnv equals the two fnv32 passes (block hashes kept)', () {
+    String twoPass(String s) =>
+        ThorReplay.fnv32(s).toRadixString(16).padLeft(8, '0') +
+        ThorReplay.fnv32(s, 0x9747b28c, 0x5bd1e995)
+            .toRadixString(16)
+            .padLeft(8, '0');
+    for (final s in ['', 'abc', '["blk",1,2.5,"ñ"]', 'x' * 5000, '😀🛒']) {
+      expect(ThorReplay.fnv(s), twoPass(s));
+    }
+    // Valor fijo: un cambio de algoritmo invalida todos los bloques ya
+    // subidos y debe ser deliberado.
+    expect(ThorReplay.fnv('abc'), '1a47e90b6fd80d5c');
+  });
 }
