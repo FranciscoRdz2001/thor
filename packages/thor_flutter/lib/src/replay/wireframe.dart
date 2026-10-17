@@ -68,17 +68,22 @@ class Wireframe {
 /// Formato de cada primitiva (arreglo compacto, posición 0 = tipo):
 /// - rect:     `['r', x, y, w, h, vp, color, radio, colorBorde, anchoBorde]`
 /// - texto:    `['t', x, y, w, h, vp, color, tamaño, peso, alineación, texto]`
+///   (enmascarado: `texto` es la lista de largos de palabra)
 /// - ícono:    `['i', x, y, w, h, vp, color, tamaño, codepoint, fuente]`
-/// - imagen:   `['m', x, y, w, h, vp, url]`
+/// - imagen:   `['m', x, y, w, h, vp]` (+ `url` solo con `imageUrls`)
 /// - campo:    `['f', x, y, w, h, vp, largoDelTexto]` (contenido jamás)
 /// - viewport: `['v', x, y, w, h, vpPadre, id, eje]`
 class WireframeBuilder {
   /// Crea un recorrido de una sola vez.
-  WireframeBuilder({required this.maskText});
+  WireframeBuilder({required this.maskText, this.imageUrls = false});
 
   /// Texto enmascarado: conserva espacios y largo, cambia todo lo demás por
   /// `•`. La forma del texto basta para reconocer la pantalla.
   final bool maskText;
+
+  /// Incluye la URL de cada imagen. Apagado por defecto: una imagen viaja
+  /// como un rectángulo — nada pesado sale del dispositivo.
+  final bool imageUrls;
 
   static final Expando<int> _viewportIds = Expando('thorViewportId');
   static int _nextViewportId = 1;
@@ -176,7 +181,7 @@ class WireframeBuilder {
     } else if (ro is RenderParagraph) {
       _paragraph(ro, r, vp);
     } else if (ro is RenderImage) {
-      _ops.add(['m', ..._box(r), vp, ctx.url ?? '']);
+      _ops.add(['m', ..._box(r), vp, if (imageUrls) ctx.url ?? '']);
     } else if (ro is RenderEditable) {
       _ops.add(['f', ..._box(r), vp, ro.text?.toPlainText().length ?? 0]);
     } else if (ro.runtimeType.toString() == '_RenderColoredBox') {
@@ -220,7 +225,13 @@ class WireframeBuilder {
     ]);
   }
 
-  static String _mask(String text) => text.replaceAll(RegExp(r'[^\s]'), '•');
+  /// Texto enmascarado = largo de cada palabra (`[10, 4, 8]`): conserva
+  /// la forma para reconocer la pantalla sin un solo carácter real, y pesa
+  /// menos que el texto mismo.
+  static List<int> _mask(String text) => [
+        for (final word in text.split(RegExp(r'\s+')))
+          if (word.isNotEmpty) word.runes.length,
+      ];
 
   static String? _imageUrl(ImageProvider provider) {
     if (provider is NetworkImage) return provider.url;

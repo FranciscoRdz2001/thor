@@ -33,8 +33,7 @@ void main() {
 
     tearDown(ThorCore.debugReset);
 
-    test('el handler previo de FlutterError SIGUE corriendo (delegación)',
-        () {
+    test('el handler previo de FlutterError SIGUE corriendo (delegación)', () {
       var previousRan = false;
       final original = FlutterError.onError;
       FlutterError.onError = (_) => previousRan = true;

@@ -75,8 +75,7 @@ void main() {
     );
   });
 
-  testWidgets('tap fuera de todo interactivo no genera evento',
-      (tester) async {
+  testWidgets('tap fuera de todo interactivo no genera evento', (tester) async {
     await tester.pumpWidget(
       const MaterialApp(home: Scaffold(body: Center(child: Text('nada')))),
     );
