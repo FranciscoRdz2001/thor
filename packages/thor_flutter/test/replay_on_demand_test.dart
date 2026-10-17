@@ -236,9 +236,10 @@ void main() {
       'source': 'zone',
     });
     await _until(() => dash.events('error').isNotEmpty, reason: 'error');
+    const m = RedactionPolicy.redactedMarker;
     expect(
       dash.events('error').single['msg'],
-      'Bad state: cliente :email tel :n token=${RedactionPolicy.redactedMarker}',
+      'Bad state: cliente :email tel :n token=$m',
     );
   });
 }
