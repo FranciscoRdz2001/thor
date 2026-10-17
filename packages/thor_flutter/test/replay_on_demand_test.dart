@@ -242,4 +242,24 @@ void main() {
       'Bad state: cliente :email tel :n token=$m',
     );
   });
+
+  test('an error after uploading already started goes up right away', () async {
+    // Caso real: la app tiene un 404 en el arranque que enciende la
+    // subida; un crash minutos después no debe esperar al siguiente ciclo
+    // (uploadEvery) — si la app muere, se pierde hasta el próximo arranque.
+    await start(config: false);
+    _networkEvent(status: 404);
+    await _until(() => dash.ingested.isNotEmpty, reason: 'subida por 404');
+
+    ThorCore.instance!.recorder.record(ThorEventKind.error, {
+      'source': 'zone',
+      'type': 'StateError',
+      'message': 'Bad state: boom',
+    });
+    await _until(
+      () => dash.events('error').isNotEmpty,
+      reason: 'el error sube sin esperar a uploadEvery',
+    );
+    expect(dash.events('error').single['msg'], 'Bad state: boom');
+  });
 }

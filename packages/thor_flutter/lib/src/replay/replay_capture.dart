@@ -761,7 +761,34 @@ class ThorReplay {
     // muestra: es justo la que hay que depurar.
     final failed = event.kind == ThorEventKind.error ||
         (event.kind == ThorEventKind.network && slim.containsKey('err'));
-    if (failed && _config.uploadOnError) _enableUpload();
+    if (!failed || !_config.uploadOnError) return;
+    if (!_uploadEnabled) {
+      _enableUpload();
+    } else if (event.kind == ThorEventKind.error) {
+      // Ya subía (otro fallo antes, la muestra, el dashboard): el error
+      // tampoco espera al siguiente ciclo — si la app muere ahora, el
+      // dashboard ya lo tiene.
+      _flushForError();
+    }
+  }
+
+  /// Mínimo entre subidas disparadas por errores: un error que se repite
+  /// en cada frame no debe convertirse en una subida por frame.
+  @visibleForTesting
+  static Duration errorFlushGap = const Duration(seconds: 10);
+  Timer? _errorFlushTimer;
+  int? _errorFlushedAt;
+
+  void _flushForError() {
+    if (_errorFlushTimer != null) return;
+    final since = _errorFlushedAt == null ? null : _ts - _errorFlushedAt!;
+    final wait =
+        since == null ? 0 : max(0, errorFlushGap.inMilliseconds - since);
+    _errorFlushTimer = Timer(Duration(milliseconds: wait), () {
+      _errorFlushTimer = null;
+      _errorFlushedAt = _ts;
+      unawaited(flush());
+    });
   }
 
   /// Esta sesión pasa a subir COMPLETA (desde el inicio: [_pendingUpload]
@@ -1074,6 +1101,7 @@ class ThorReplay {
     r._idleTimer?.cancel();
     r._flushTimer?.cancel();
     r._configTimer?.cancel();
+    r._errorFlushTimer?.cancel();
     r._unsubscribe?.call();
     WidgetsBinding.instance.removeObserver(r._lifecycle);
     GestureBinding.instance.pointerRouter.removeGlobalRoute(r._onPointer);
