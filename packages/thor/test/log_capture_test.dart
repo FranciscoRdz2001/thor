@@ -97,8 +97,33 @@ void main() {
   group('ThorCore.log', () {
     tearDown(ThorCore.debugReset);
 
-    test('graba level/source/message limpios de datos personales', () async {
+    test(
+        'por defecto (solo secretos): emails y teléfonos legibles, '
+        'secretos fuera', () async {
       final core = await ThorCore.init();
+      core.log(
+        'usuario ana@x.com tel 55 1234 5678 Bearer abcdefghijk123',
+        level: ThorLogLevel.warn,
+        error: 'fallo token=xyz pedido 10293847',
+      );
+      final p = core.store.ofKind(ThorEventKind.log).single.payload;
+      expect(
+        p['message'],
+        'usuario ana@x.com tel 55 1234 5678 Bearer '
+        '${RedactionPolicy.redactedMarker}',
+      );
+      expect(
+        p['error'],
+        'fallo token=${RedactionPolicy.redactedMarker} pedido 10293847',
+      );
+      await core.dispose();
+    });
+
+    test('strict: graba level/source/message limpios de datos personales',
+        () async {
+      final core = await ThorCore.init(
+        redaction: const RedactionPolicy.strict(),
+      );
       core.log(
         'usuario ana@x.com tel 55 1234 5678 Bearer abcdefghijk123',
         level: ThorLogLevel.warn,

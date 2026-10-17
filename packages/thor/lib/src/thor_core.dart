@@ -76,9 +76,11 @@ class ThorCore {
   ///   de Flutter lo provee. Si falta, se genera uno efímero.
   /// - [capture]: topes de ráfagas de estado y aligerado de red en el
   ///   journal (ver [ThorCapturePolicy]).
+  /// - [redaction]: por defecto [RedactionPolicy.secretsOnly] (solo se
+  ///   tapan secretos); `RedactionPolicy.strict()` para apps sensibles.
   static Future<ThorCore> init({
     Directory? storageDirectory,
-    RedactionPolicy redaction = const RedactionPolicy.strict(),
+    RedactionPolicy redaction = const RedactionPolicy.secretsOnly(),
     BufferQuotas? quotas,
     String? installId,
     Map<String, String> appInfo = const {},
@@ -150,11 +152,13 @@ class ThorCore {
   ///
   /// Es lo que hay debajo de la captura de `print`/`debugPrint` y de
   /// `Thor.log`. PRIVACIDAD: el mensaje (y [name] y [error]) pasan por
-  /// [RedactionPolicy.scrubText] —emails, números largos, tokens, `Bearer
-  /// …`, `password=…`— y se truncan a [ThorCapturePolicy.maxLogLength]
-  /// ANTES de grabarse: lo que la app imprime no es dato que mande a
-  /// propósito. Las ráfagas se recortan en el grabador (ver
-  /// [ThorCapturePolicy.logBurstLimit]).
+  /// [RedactionPolicy.scrub] de la política vigente y se truncan a
+  /// [ThorCapturePolicy.maxLogLength] ANTES de grabarse. Con la política
+  /// por defecto (solo secretos) se quitan `Bearer …`, `password=…`,
+  /// `token=…` y similares, y el resto (emails, ids) queda legible para
+  /// depurar; con `RedactionPolicy.strict()` además emails, números largos
+  /// y tokens sueltos se vuelven `:email`/`:n`/`:token`. Las ráfagas se
+  /// recortan en el grabador (ver [ThorCapturePolicy.logBurstLimit]).
   ///
   /// [source]: `thor` (API explícita), `print` o `debugPrint`.
   void log(
@@ -166,15 +170,17 @@ class ThorCore {
     StackTrace? stackTrace,
   }) {
     final max = capture.maxLogLength;
+    final scrub = redaction.scrub;
     recorder.record(
       ThorEventKind.log,
       {
         'level': level.name,
         'source': source,
-        'message': cleanLogText(message, max),
-        if (name != null && name.isNotEmpty) 'name': cleanLogText(name, 80),
+        'message': cleanLogText(message, max, scrub: scrub),
+        if (name != null && name.isNotEmpty)
+          'name': cleanLogText(name, 80, scrub: scrub),
         if (error != null) ...{
-          'error': cleanLogText('$error', max),
+          'error': cleanLogText('$error', max, scrub: scrub),
           'errorType': error.runtimeType.toString(),
         },
         if (stackTrace != null && level == ThorLogLevel.error)
@@ -184,14 +190,22 @@ class ThorCore {
     );
   }
 
-  /// [text] sin datos personales ni secretos y recortado a [max].
+  /// [text] limpio con [scrub] y recortado a [max].
+  ///
+  /// [scrub] es normalmente `redaction.scrub` de la política vigente; sin
+  /// él se usa la limpieza más estricta ([RedactionPolicy.scrubText]:
+  /// secretos y datos con forma personal), para quien llame sin política.
   ///
   /// Se recorta ANTES de limpiar (a 4×[max]) porque la limpieza es regex
   /// sobre el texto entero y un `print(json)` puede pesar un megabyte; el
   /// margen evita cortar un email a la mitad justo en el borde.
-  static String cleanLogText(String text, int max) {
+  static String cleanLogText(
+    String text,
+    int max, {
+    String Function(String text) scrub = RedactionPolicy.scrubText,
+  }) {
     final head = text.length > max * 4 ? text.substring(0, max * 4) : text;
-    final clean = RedactionPolicy.scrubText(head);
+    final clean = scrub(head);
     if (clean.length <= max && head.length == text.length) return clean;
     final cut = clean.length <= max ? clean : clean.substring(0, max);
     return '$cut…(+${text.length - cut.length})';
@@ -235,8 +249,10 @@ class ThorCore {
   /// sesión del usuario X" cuando llega la queja.
   ///
   /// [id] se guarda TAL CUAL (sin hash: hay que poder cruzarlo con el
-  /// backend). Debe ser OPACO (id interno de cliente): un id con forma de
-  /// email se sustituye por [RedactionPolicy.redactedMarker].
+  /// backend). Con `RedactionPolicy.strict()` debe ser OPACO (id interno
+  /// de cliente): un id con forma de email se sustituye por
+  /// [RedactionPolicy.redactedMarker]. Con la política por defecto (solo
+  /// secretos) un email también pasa: es justo lo que se busca al depurar.
   ///
   /// [props] es JSON libre (mapas, listas, números, texto) con cualquier
   /// dato que la app quiera ver al depurar: email, nombre, tienda, plan…
@@ -248,9 +264,10 @@ class ThorCore {
   ///
   /// Graba un evento de entorno `signal: 'user'` solo si algo cambió.
   void setUser(String? id, {Map<String, Object?>? props}) {
-    final safeId = id != null && _emailShaped.hasMatch(id)
-        ? RedactionPolicy.redactedMarker
-        : id;
+    final safeId =
+        id != null && !redaction.isSecretsOnly && _emailShaped.hasMatch(id)
+            ? RedactionPolicy.redactedMarker
+            : id;
     final clean = _cleanProps(props);
     if (safeId == _userId && _sameJson(clean, _userProps)) return;
     _userId = safeId;

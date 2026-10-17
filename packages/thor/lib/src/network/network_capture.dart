@@ -4,7 +4,6 @@ import 'dart:io';
 import 'dart:typed_data' show BytesBuilder;
 
 import 'package:clock/clock.dart';
-import 'package:meta/meta.dart';
 
 import 'package:thor/src/model/event.dart';
 import 'package:thor/src/network/raw_network_store.dart';
@@ -28,6 +27,10 @@ class ThorNetworkCapture {
   static bool _installed = false;
 
   /// Máximo de bytes de cuerpo (petición y respuesta) retenidos por evento.
+  /// Lo que pase de aquí se marca (`requestBodyTruncated` /
+  /// `responseBodyTruncated`) y el tamaño ORIGINAL queda en
+  /// `requestBytes` / `responseBytes`. El replay recorta después a su
+  /// propio tope (4 KB por defecto, `ThorReplayConfig.maxBodyBytes`).
   static const int maxBodyBytes = 8 * 1024;
 
   /// Si además del cURL redactado se retiene el CRUDO (reproducible) en el
@@ -45,9 +48,10 @@ class ThorNetworkCapture {
     return ignoredPrefixes.any(s.startsWith);
   }
 
-  /// La URL tal como la graba Thor (query por allowlist, ruta sin datos
-  /// personales). Expuesta para tests.
-  @visibleForTesting
+  /// La URL tal como la graba Thor según [redaction]: en solo secretos,
+  /// completa salvo el valor de los parámetros de secreto; en allowlist,
+  /// query por allowlist y ruta sin datos personales. Expuesta para tests
+  /// y para el replay en modo estricto.
   static Uri redactUrl(Uri uri, RedactionPolicy redaction) =>
       _SpyRequest._redactUrl(uri, redaction);
 
@@ -124,7 +128,8 @@ class _SpyHttpClient implements HttpClient {
           'url': _SpyRequest._redactUrl(url, core.redaction).toString(),
           'durationMs': clock.now().difference(startedAt).inMilliseconds,
           'error': error.runtimeType.toString(),
-          'errorMessage': error.toString(),
+          // El toString puede traer la URL con `?token=…`.
+          'errorMessage': core.redaction.scrub(error.toString()),
         },
         origin: origin,
       );
@@ -245,7 +250,13 @@ class _SpyRequest implements HttpClientRequest {
   final BytesBuilder _requestBody = BytesBuilder(copy: false);
   bool _recorded = false;
 
+  /// Bytes REALES del cuerpo de salida (el retenido se corta en
+  /// [ThorNetworkCapture.maxBodyBytes]): quien depura necesita saber que
+  /// mandó 40 KB aunque solo vea los primeros 8.
+  int _requestTotal = 0;
+
   void _tee(List<int> chunk) {
+    _requestTotal += chunk.length;
     final remaining = ThorNetworkCapture.maxBodyBytes - _requestBody.length;
     if (remaining <= 0) return;
     _requestBody.add(
@@ -311,10 +322,11 @@ class _SpyRequest implements HttpClientRequest {
     _recorded = true;
     return _SpyResponse(
       response,
-      onDone: (bodyBytes, {required truncated}) => _record(
+      onDone: (bodyBytes, {required truncated, required total}) => _record(
         response: response,
         responseBody: bodyBytes,
         responseTruncated: truncated,
+        responseTotal: total,
       ),
     );
   }
@@ -329,6 +341,7 @@ class _SpyRequest implements HttpClientRequest {
     HttpClientResponse? response,
     List<int>? responseBody,
     bool responseTruncated = false,
+    int? responseTotal,
     Object? error,
   }) {
     final core = ThorCore.instance;
@@ -337,34 +350,39 @@ class _SpyRequest implements HttpClientRequest {
     final elapsed = clock.now().difference(startedAt);
 
     final requestHeaders = _headersToMap(inner.headers);
+    final requestMime = inner.headers.contentType?.mimeType;
+    final responseMime = response?.headers.contentType?.mimeType;
     final payload = <String, Object?>{
       'method': inner.method,
       'url': _redactUrl(inner.uri, redaction).toString(),
       'durationMs': elapsed.inMilliseconds,
       'requestHeaders': redaction.redactFlatMap(requestHeaders),
-      'requestBytes': _requestBody.length,
-      if (_requestBody.isNotEmpty)
-        'requestBody': _decodeBody(
-          _requestBody.toBytes(),
-          inner.headers.contentType?.mimeType,
-          redaction,
-        ),
+      'requestBytes': _requestTotal,
+      if (_requestBody.isNotEmpty) ...{
+        'requestBody':
+            _decodeBody(_requestBody.toBytes(), requestMime, redaction),
+        if (_requestTotal > _requestBody.length) 'requestBodyTruncated': true,
+        if (!_captures(_requestBody.toBytes(), requestMime, redaction))
+          'requestBodyOmitted': true,
+      },
       if (response != null) ...{
         'statusCode': response.statusCode,
         'responseHeaders':
             redaction.redactFlatMap(_headersToMap(response.headers)),
-        'responseBytes': response.contentLength,
-        if (responseBody != null && responseBody.isNotEmpty)
-          'responseBody': _decodeBody(
-            responseBody,
-            response.headers.contentType?.mimeType,
-            redaction,
-          ),
+        // Lo que la app recibió (ya descomprimido); `contentLength` es -1
+        // con chunked y el tamaño comprimido con gzip.
+        'responseBytes':
+            (responseTotal ?? 0) > 0 ? responseTotal : response.contentLength,
+        if (responseBody != null && responseBody.isNotEmpty) ...{
+          'responseBody': _decodeBody(responseBody, responseMime, redaction),
+          if (!_captures(responseBody, responseMime, redaction))
+            'responseBodyOmitted': true,
+        },
         if (responseTruncated) 'responseBodyTruncated': true,
       },
       if (error != null) ...{
         'error': error.runtimeType.toString(),
-        'errorMessage': error.toString(),
+        'errorMessage': redaction.scrub(error.toString()),
       },
       'curl': _buildRedactedCurl(redaction, requestHeaders),
     };
@@ -421,12 +439,31 @@ class _SpyRequest implements HttpClientRequest {
   /// con apóstrofos rompía el comando generado.
   static String _sq(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
-  /// Redacta la URL: query por allowlist y, en la RUTA, los segmentos que
+  /// Redacta la URL según el modo de [redaction].
+  ///
+  /// Solo secretos: la URL queda COMPLETA (ruta y query) salvo el valor de
+  /// los parámetros de secreto (`token`, `api_key`, `password`…). Sin
+  /// tocar nada si no hay ninguno: así la URL grabada es la misma que
+  /// mandó la app (orden y repetidos incluidos).
+  ///
+  /// Allowlist: query por allowlist y, en la RUTA, los segmentos que
   /// suelen ser datos de la persona. Bug real (una app de producción):
   /// `/cache/profile/<email>` viajaba tal cual porque solo se limpiaba la
   /// query. Los reemplazos son marcadores legibles que mantienen la URL
   /// válida y agrupable (`/profile/:email`).
   static Uri _redactUrl(Uri uri, RedactionPolicy redaction) {
+    if (redaction.isSecretsOnly) {
+      final all = uri.queryParametersAll;
+      if (!all.keys.any(RedactionPolicy.isSecretKey)) return uri;
+      return uri.replace(
+        queryParameters: {
+          for (final MapEntry(:key, :value) in all.entries)
+            key: RedactionPolicy.isSecretKey(key)
+                ? [for (final _ in value) RedactionPolicy.redactedMarker]
+                : value,
+        },
+      );
+    }
     final segments = uri.pathSegments;
     final cleanPath = segments.any((s) => redactPathSegment(s) != s);
     if (uri.queryParameters.isEmpty && !cleanPath) return uri;
@@ -455,25 +492,63 @@ class _SpyRequest implements HttpClientRequest {
     return map;
   }
 
+  /// ¿Se decodifica este cuerpo? Por content-type
+  /// ([RedactionPolicy.capturesBody]); en solo secretos, un cuerpo SIN
+  /// content-type se acepta si es texto UTF-8 limpio (muchos clientes
+  /// mandan JSON sin declararlo).
+  static bool _captures(
+    List<int> bytes,
+    String? mimeType,
+    RedactionPolicy redaction,
+  ) {
+    if (redaction.capturesBody(mimeType)) return true;
+    return mimeType == null && redaction.isSecretsOnly && _looksLikeText(bytes);
+  }
+
+  static bool _looksLikeText(List<int> bytes) {
+    try {
+      final text = utf8.decode(bytes);
+      // Controles (salvo tab/CR/LF) = binario que casualmente es UTF-8.
+      return !text.codeUnits.any((c) => c < 9 || (c > 13 && c < 32));
+    } on FormatException {
+      return false;
+    }
+  }
+
   /// Decodifica un cuerpo si su content-type está permitido; si no, solo
-  /// deja constancia del tamaño. JSON se redacta estructuralmente.
+  /// deja constancia del tamaño. JSON se redacta estructuralmente (también
+  /// el que llega sin content-type o con `+json`); el texto pasa por
+  /// [RedactionPolicy.redactValue] (en solo secretos: [RedactionPolicy.
+  /// scrubSecrets], que cubre `password=…` de formularios y JSON cortado).
   static Object? _decodeBody(
     List<int> bytes,
     String? mimeType,
     RedactionPolicy redaction,
   ) {
     final mime = mimeType ?? 'application/octet-stream';
-    if (!redaction.allowedBodyContentTypes.contains(mime)) {
+    if (!_captures(bytes, mimeType, redaction)) {
       return '<omitido: ${bytes.length} bytes, $mime>';
     }
     final text = utf8.decode(bytes, allowMalformed: true);
-    if (mime == 'application/json') {
+    final trimmed = text.trimLeft();
+    // `package:http` manda un String como text/plain aunque sea JSON: en
+    // solo secretos se intenta igual, para redactarlo por clave y que se
+    // lea como JSON.
+    final jsonish = mime == 'application/json' ||
+        mime.endsWith('+json') ||
+        ((mimeType == null || redaction.isSecretsOnly) &&
+            (trimmed.startsWith('{') || trimmed.startsWith('[')));
+    if (jsonish) {
       try {
         return redaction.redactValue(jsonDecode(text));
       } on FormatException {
-        return redaction.redactValue(text);
+        // JSON cortado por el tope o mal formado: sigue como texto.
       }
     }
+    // En solo secretos el cuerpo de texto entero (ya acotado por
+    // [ThorNetworkCapture.maxBodyBytes]) no pasa por el recorte por valor
+    // de la política: un JSON cortado se ve completo hasta el tope.
+    if (redaction.isSecretsOnly) return RedactionPolicy.scrubSecrets(text);
     return redaction.redactValue(text);
   }
 
@@ -528,10 +603,15 @@ class _SpyResponse extends Stream<List<int>> implements HttpClientResponse {
   _SpyResponse(this.inner, {required this.onDone});
 
   final HttpClientResponse inner;
-  final void Function(List<int> body, {required bool truncated}) onDone;
+  final void Function(
+    List<int> body, {
+    required bool truncated,
+    required int total,
+  }) onDone;
 
   final BytesBuilder _body = BytesBuilder(copy: false);
   bool _truncated = false;
+  int _total = 0;
   bool _notified = false;
 
   /// El tap va como TRANSFORMADOR, no como handlers de la suscripción:
@@ -542,6 +622,7 @@ class _SpyResponse extends Stream<List<int>> implements HttpClientResponse {
   late final Stream<List<int>> _tapped = inner.transform(
     StreamTransformer<List<int>, List<int>>.fromHandlers(
       handleData: (chunk, sink) {
+        _total += chunk.length;
         final remaining = ThorNetworkCapture.maxBodyBytes - _body.length;
         if (remaining > 0) {
           _body.add(
@@ -581,7 +662,7 @@ class _SpyResponse extends Stream<List<int>> implements HttpClientResponse {
   void _notify() {
     if (_notified) return;
     _notified = true;
-    onDone(_body.toBytes(), truncated: _truncated);
+    onDone(_body.toBytes(), truncated: _truncated, total: _total);
   }
 
   // ── Delegación 1:1 ──

@@ -20,7 +20,9 @@ import 'package:thor_flutter/src/visible_tree.dart';
 /// lleva además de dónde salió el label: `copy: true` si es copy de la
 /// interfaz (botón de alto nivel, tooltip, hint, ícono, o dentro de un
 /// [ThorReplayShowText]) y `hidden: true` si el tap cayó en un
-/// [ThorReplayIgnore]. El replay enmascara todo lo demás.
+/// [ThorReplayIgnore]. Con el texto visible (default) el replay manda el
+/// label legible (sin secretos); con `maskText`/estricto enmascara lo que
+/// no sea copy.
 ///
 /// De pasada hace la retro-corrección de pantalla: si el ancestro tipo
 /// página del tap difiere de lo que resolvió el NavigatorObserver, gana el
@@ -49,7 +51,8 @@ class InteractionCapture {
   /// Fuera a propósito: ListTile y sus variantes (su título suele ser el
   /// dato de la fila: un nombre, una dirección, un pedido), chips (tags,
   /// contactos), DropdownButton (muestra el VALOR elegido) y
-  /// PopupMenuButton (idem). Esos se enmascaran en el replay.
+  /// PopupMenuButton (idem). Esos se enmascaran en el replay con
+  /// `maskText`/estricto.
   static const _copyTypes = {
     'ElevatedButton', 'TextButton', 'OutlinedButton', 'FilledButton',
     'IconButton', 'FloatingActionButton', 'BackButton', 'CloseButton',

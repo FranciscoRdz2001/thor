@@ -9,11 +9,32 @@ import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/replay/wireframe.dart';
 
+/// Cuánto oculta el replay de lo que sale del dispositivo.
+enum ThorPrivacy {
+  /// Default: el replay se ve como un video y la red va completa (URL con
+  /// query, headers, cuerpos), con SOLO los secretos tapados
+  /// (`Authorization`, cookies, tokens, API keys, contraseñas, tarjeta,
+  /// CVV, PIN). Emails, ids, nombres y direcciones pasan tal cual: sin
+  /// ellos no se puede depurar un servicio.
+  secretsOnly,
+
+  /// Opt-in para apps sensibles: el comportamiento anterior. Texto en
+  /// pantalla y labels de taps enmascarados (largos de palabra), red solo
+  /// con método/ruta/status/duración en las exitosas (query fuera, ruta
+  /// sin `:email`/`:n`/`:token`) y cuerpos por la allowlist de
+  /// `RedactionPolicy.strict()`; logs, errores y rutas sin datos con forma
+  /// personal. Para el mismo nivel en el journal y el reporte local, usar
+  /// además `Thor.run(redaction: RedactionPolicy.strict())`.
+  strict,
+}
+
 /// Configuración del replay de sesión.
 class ThorReplayConfig {
   /// Crea la configuración.
   const ThorReplayConfig({
-    this.maskText = true,
+    this.privacy,
+    this.maskText = false,
+    this.maxBodyBytes = 4096,
     this.imageUrls = false,
     this.endpoint,
     this.sampleRate = 1,
@@ -28,15 +49,33 @@ class ThorReplayConfig {
     this.configEndpoint,
   });
 
-  /// Enmascara todo el texto (default). Apagar solo en entornos propios.
+  /// Nivel de privacidad ([ThorPrivacy]). `null` (default) sigue a la
+  /// política de `Thor.run`: [ThorPrivacy.secretsOnly] con la de por
+  /// defecto, [ThorPrivacy.strict] si la app pasó
+  /// `RedactionPolicy.strict()` (o cualquier allowlist).
+  final ThorPrivacy? privacy;
+
+  /// Enmascara el texto de la pantalla. Apagado por defecto: el replay se
+  /// ve como un video, con el texto real (también lo tecleado en campos
+  /// normales). En cualquier modo, jamás viaja el contenido de un campo
+  /// oculto (`obscureText`, autofill de contraseña/tarjeta,
+  /// `TextInputType.visiblePassword`: solo si está lleno) ni nada dentro
+  /// de un `ThorReplayIgnore`. [ThorPrivacy.strict] lo enciende siempre.
   ///
-  /// Aplica también a los labels de taps (`ev` de interacción): un tap en
-  /// una fila que muestra "Ana Pérez" no debe mandar "Ana Pérez" mientras
-  /// la pantalla lo tapa. Pasan legibles solo los que son copy de la
-  /// interfaz (botones de alto nivel, tooltips, hints, íconos, o dentro de
-  /// un `ThorReplayShowText`). Encendido o no, de todo label (y Key) se
-  /// quitan emails, números largos y tokens.
+  /// Encendido, el texto viaja como largos de palabra y aplica también a
+  /// los labels de taps (`ev` de interacción): un tap en una fila que
+  /// muestra "Ana Pérez" no manda "Ana Pérez" mientras la pantalla lo
+  /// tapa. Pasan legibles solo los que son copy de la interfaz (botones de
+  /// alto nivel, tooltips, hints, íconos, o dentro de un
+  /// `ThorReplayShowText`), sin emails, números largos ni tokens.
   final bool maskText;
+
+  /// Tope por cuerpo (petición y respuesta) en los eventos de red del
+  /// replay, en caracteres del JSON/texto ya redactado. Un cuerpo más
+  /// largo viaja cortado como texto con `qbt`/`bt: true`; el tamaño real
+  /// va en `qn`/`rn`. En modo diagnóstico sube al tope de la captura
+  /// (`ThorNetworkCapture.maxBodyBytes`, 8 KB) si este es menor.
+  final int maxBodyBytes;
 
   /// Textos exactos que son copy de la app y viajan legibles aunque
   /// [maskText] esté encendido — típicamente las cadenas de su l10n
@@ -62,9 +101,10 @@ class ThorReplayConfig {
   /// cliente sin subir el 100% de las sesiones. Contesta
   /// `{"upload": bool, "detail": bool, "until": …}`:
   /// - `upload` — esta sesión sube completa, como si cayera en la muestra.
-  /// - `detail` — modo diagnóstico: las peticiones exitosas llevan cuerpos
-  ///   y headers (ya redactados, como las fallidas) y los logs van en todos
-  ///   los niveles.
+  /// - `detail` — modo diagnóstico: los logs van en todos los niveles
+  ///   (no solo warn/error) y el tope de cuerpos de red sube de
+  ///   [maxBodyBytes] a 8 KB. En [ThorPrivacy.strict], además, las
+  ///   peticiones exitosas llevan cuerpos y headers (ya redactados).
   ///
   /// Un fallo (sin red, 500, JSON raro) se ignora: la sesión sigue con lo
   /// que decidió la muestra. `null` = no se pregunta.
@@ -138,15 +178,28 @@ class ThorReplayStats {
 ///   `Thor.setUser` (`id: null` = se limpió). Si ya se conocía al
 ///   arrancar, también va como `uid` en el meta.
 /// - `{"t":"ev",…}` — evento de Thor en versión ligera. En un tap, `p.l`
-///   es el label (string) o, enmascarado, la lista de largos de palabra
-///   como el texto en pantalla; `p.k` la Key, solo si el label es legible.
+///   es el label (string; enmascarado, la lista de largos de palabra como
+///   el texto en pantalla); `p.k` la Key, solo si el label es legible.
 ///   Un log (`k: "log"`) es `p.l` (marca de `Thor.mark`) o
-///   `{lv, src, m, n?, err?, x?}` (línea de consola ya limpia; `x` = líneas
-///   recortadas por ráfaga). Solo warn/error, salvo en modo diagnóstico.
-///   `{l: "report", reason?}` = el usuario tocó "Reportar problema"
-///   ([requestUpload]). Red (`k: "network"`): `{m, u, s, d}`; si falló,
-///   además `err`, `at` y `body`; en modo diagnóstico todas llevan `body`,
-///   `qb`, `qh`, `rh` (cuerpos y headers ya redactados).
+///   `{lv, src, m, n?, err?, x?}` (línea de consola sin secretos; `x` =
+///   líneas recortadas por ráfaga). Solo warn/error, salvo en modo
+///   diagnóstico. `{l: "report", reason?}` = el usuario tocó "Reportar
+///   problema" ([requestUpload]).
+///
+///   Red (`k: "network"`), TODAS las peticiones (exitosas también; nunca
+///   imágenes, fuentes ni assets estáticos):
+///   `{m, u, s, d, qh?, rh?, qb?, body?, qbt?, bt?, qn?, rn?, err?, at?}`
+///   — método, URL completa con query, status, duración (ms), headers de
+///   petición/respuesta, cuerpo de petición (`qb`) y de respuesta
+///   (`body`): JSON decodificado si es JSON, texto si no; binarios solo
+///   por tamaño. Cada cuerpo hasta [ThorReplayConfig.maxBodyBytes];
+///   cortado → texto con `qbt`/`bt: true`. `qn`/`rn` = bytes reales.
+///   `err` (mensaje) y `at` (`archivo:línea` de origen) solo si falló.
+///   URL, headers y cuerpos ya pasaron por la política: solo los
+///   secretos van tapados.
+///   En [ThorPrivacy.strict]: `{m, u, s, d}` (sin query) y en un fallo
+///   `err`, `at`, `body`; en modo diagnóstico todas `body`, `qb`, `qh`,
+///   `rh`, redactados con `RedactionPolicy.strict()`.
 ///
 /// Subida en dos fases: se mandan los registros sin bloques; el servidor
 /// contesta `{"missing": [...]}` y solo esos bloques se mandan después.
@@ -167,10 +220,11 @@ class ThorReplay {
   bool _uploadEnabled;
 
   /// Modo diagnóstico: el replay lleva TODOS los logs (debug/info
-  /// incluidos), no solo warn/error, y las peticiones exitosas con cuerpos
-  /// y headers. Lo enciende el servidor por sesión/usuario (`detail` de
-  /// [ThorReplayConfig.configEndpoint]) cuando hay que perseguir un bug;
-  /// nunca la app sola.
+  /// incluidos), no solo warn/error, y cuerpos de red hasta 8 KB en vez de
+  /// [ThorReplayConfig.maxBodyBytes] (en [ThorPrivacy.strict], además, las
+  /// exitosas con cuerpos y headers). Lo enciende el servidor por
+  /// sesión/usuario (`detail` de [ThorReplayConfig.configEndpoint]) cuando
+  /// hay que perseguir un bug; nunca la app sola.
   bool _diagnostic = false;
 
   /// Enciende/apaga el modo diagnóstico (ver [_diagnostic]).
@@ -178,6 +232,24 @@ class ThorReplay {
   bool get diagnostic => _diagnostic;
   @visibleForTesting
   set diagnostic(bool value) => _diagnostic = value;
+
+  /// Privacidad efectiva: la pedida, o la que corresponde a la política de
+  /// `Thor.run` (ver [ThorReplayConfig.privacy]).
+  late final bool _strict = (_config.privacy ??
+          (_core.redaction.isSecretsOnly
+              ? ThorPrivacy.secretsOnly
+              : ThorPrivacy.strict)) ==
+      ThorPrivacy.strict;
+
+  /// Texto en pantalla y labels enmascarados.
+  bool get _maskText => _config.maskText || _strict;
+
+  /// Limpieza del texto libre que sale (rutas, errores, logs, labels):
+  /// solo secretos, o además forma de dato personal en estricto. Sobre un
+  /// texto que el núcleo ya limpió es idempotente.
+  String _scrub(String text) => _strict
+      ? RedactionPolicy.scrubText(text)
+      : RedactionPolicy.scrubSecrets(text);
 
   final Stopwatch _clock = Stopwatch();
   final List<String> _pendingDisk = [];
@@ -554,7 +626,7 @@ class ThorReplay {
       ..start();
     try {
       wire = WireframeBuilder(
-        maskText: _config.maskText,
+        maskText: _maskText,
         imageUrls: _config.imageUrls,
         unmaskedTexts: _config.unmaskedTexts,
       ).build();
@@ -730,21 +802,20 @@ class ThorReplay {
       return;
     }
     final slim = switch (event.kind) {
-      // Un nombre de ruta puede traer datos (deep link `/orders/10293847`).
+      // Un nombre de ruta puede traer secretos (deep link con `?token=`)
+      // y, en estricto, datos (`/orders/10293847`).
       ThorEventKind.navigation => {
           'a': p['action'],
-          'to': p['to'] is String
-              ? RedactionPolicy.scrubText(p['to']! as String)
-              : p['to'],
+          'to': p['to'] is String ? _scrub(p['to']! as String) : p['to'],
         },
       ThorEventKind.interaction => _slimInteraction(p),
-      // El mensaje es el toString de la excepción: puede interpolar datos
-      // del usuario ("cliente ana@x.com no existe"). Sale del dispositivo
-      // por defecto (uploadOnError): misma limpieza que logs y labels.
+      // El mensaje es el toString de la excepción: puede interpolar un
+      // token o, en estricto, datos del usuario ("cliente ana@x.com no
+      // existe"). Misma limpieza que logs y labels.
       ThorEventKind.error => {
           'type': p['type'],
           'msg': switch (p['message']) {
-            final String m => RedactionPolicy.scrubText(m),
+            final String m => _scrub(m),
             final other => other,
           },
           'src': p['source'],
@@ -760,8 +831,7 @@ class ThorReplay {
       't': 'ev',
       'ts': _ts,
       'k': event.kind.name,
-      if (event.screen != null)
-        'sc': RedactionPolicy.scrubText(event.screen!.display),
+      if (event.screen != null) 'sc': _scrub(event.screen!.display),
       'p': slim,
     });
     // Una sesión con fallo se sube entera aunque no estuviera en la
@@ -875,7 +945,8 @@ class ThorReplay {
   /// Para un botón "Reportar problema" en la app: esta sesión sube YA,
   /// completa, con una marca `{"l":"report","reason":…}` en la línea de
   /// tiempo para encontrar el momento. [reason] la escribe el usuario: se
-  /// limpia de datos personales y se recorta como cualquier log.
+  /// limpia (secretos; en estricto también datos personales) y se recorta
+  /// como cualquier log.
   ///
   /// Sin replay encendido es no-op. Normalmente completa cuando el intento
   /// de subida terminó (haya llegado o no: lo que falte se reintenta como
@@ -893,7 +964,7 @@ class ThorReplay {
       'p': {
         'l': 'report',
         if (reason != null && reason.isNotEmpty)
-          'reason': ThorCore.cleanLogText(reason, 500),
+          'reason': ThorCore.cleanLogText(reason, 500, scrub: r._scrub),
       },
     });
     if (!r._uploadEnabled && !r._rejected) {
@@ -908,49 +979,56 @@ class ThorReplay {
   ///
   /// - Dentro de `ThorReplayIgnore`: ni label ni Key (la zona no existe
   ///   para el replay).
-  /// - Copy de la interfaz (`copy: true` de InteractionCapture), texto en
-  ///   [ThorReplayConfig.unmaskedTexts] o `maskText` apagado: legible.
-  /// - Lo demás (ListTile, InkWell, GestureDetector con texto arbitrario,
-  ///   y los labels del canal semántico, que FUSIONAN el texto de los
-  ///   hijos): largos de palabra, como el texto enmascarado.
-  ///
-  /// Legible o no, se pasa por [RedactionPolicy.scrubText]: un botón
-  /// "Llamar 55 1234 5678" viaja como "Llamar :n". La Key (`k`) solo
-  /// viaja cuando el label es legible: en una lista suele ser el id o el
-  /// nombre del item (`ValueKey(cliente.email)`).
+  /// - Texto visible (default): legible, solo sin secretos
+  ///   ([RedactionPolicy.scrubSecrets]).
+  /// - Enmascarado (`maskText` o [ThorPrivacy.strict]): copy de la
+  ///   interfaz (`copy: true` de InteractionCapture) o texto en
+  ///   [ThorReplayConfig.unmaskedTexts] legibles pero sin forma de dato
+  ///   ([RedactionPolicy.scrubText]: "Llamar 55 1234 5678" → "Llamar
+  ///   :n"); lo demás (ListTile, InkWell, GestureDetector con texto
+  ///   arbitrario, labels semánticos que FUSIONAN el texto de los hijos)
+  ///   como largos de palabra. La Key (`k`) solo viaja con el label
+  ///   legible: en una lista suele ser el id o el nombre del item
+  ///   (`ValueKey(cliente.email)`).
   Map<String, Object?> _slimInteraction(Map<String, Object?> p) {
     if (p['hidden'] == true) return {'g': p['gesture'], 'w': p['widget']};
     final label = p['label'] as String?;
     final key = p['key'] as String?;
-    final readable = !_config.maskText ||
+    final mask = _maskText;
+    final readable = !mask ||
         p['copy'] == true ||
         (label != null && _config.unmaskedTexts.contains(label));
+    String clean(String text) =>
+        mask ? RedactionPolicy.scrubText(text) : _scrub(text);
     return {
       'g': p['gesture'],
       'l': label == null
           ? null
           : readable
-              ? RedactionPolicy.scrubText(label)
+              ? clean(label)
               : WireframeBuilder.mask(label),
       'w': p['widget'],
-      if (key != null && readable) 'k': RedactionPolicy.scrubText(key),
+      if (key != null && readable) 'k': clean(key),
     };
   }
 
   /// Log: las marcas siempre; las líneas de consola solo warn/error (las
   /// de debug/info son volumen sin valor para quien mira el replay), todas
-  /// en [_diagnostic]. El mensaje ya viene limpio de `ThorCore.log`.
+  /// en [_diagnostic]. El mensaje ya viene limpio de `ThorCore.log` con la
+  /// política de `Thor.run`; aquí se vuelve a pasar por [_scrub] por si el
+  /// replay es más estricto que esa política.
   Map<String, Object?>? _slimLog(Map<String, Object?> p) {
     if (p['label'] != null) return {'l': p['label']};
     final level = ThorLogLevel.tryParse(p['level']);
     if (level == null) return null;
     if (!level.isHigh && !_diagnostic) return null;
+    Object? clean(Object? v) => v is String ? _scrub(v) : v;
     return {
       'lv': level.name,
       'src': p['source'],
-      'm': p['message'],
-      if (p['name'] != null) 'n': p['name'],
-      if (p['error'] != null) 'err': p['error'],
+      'm': clean(p['message']),
+      if (p['name'] != null) 'n': clean(p['name']),
+      if (p['error'] != null) 'err': clean(p['error']),
       if (p['burst'] == true) 'x': p['dropped'],
     };
   }
@@ -959,32 +1037,126 @@ class ThorReplay {
     r'(assets|img|cdn)[^/]*\.|\.(png|jpe?g|webp|svg|gif|woff2?)(\?|$)',
   );
 
-  /// Red: las exitosas solo con lo esencial; las fallidas conservan el
-  /// cuerpo de respuesta (ya redactado) y el origen en código.
-  ///
-  /// En [_diagnostic] TODAS llevan además cuerpo de respuesta (`body`),
-  /// cuerpo de petición (`qb`) y headers (`qh`/`rh`) — tal como los dejó
-  /// la captura de red: ya pasados por [RedactionPolicy] (tokens, cookies,
-  /// claves de secreto fuera). Nada que no se mande hoy en un fallo.
+  /// Imágenes, fuentes y video por content-type de la respuesta: un CDN
+  /// sin extensión en la URL también es estático.
+  static bool _staticType(Object? headers) {
+    if (headers is! Map) return false;
+    for (final MapEntry(:key, :value) in headers.entries) {
+      if ('$key'.toLowerCase() != 'content-type') continue;
+      final type = '$value'.toLowerCase();
+      return type.startsWith('image/') ||
+          type.startsWith('font/') ||
+          type.startsWith('video/') ||
+          type.startsWith('audio/');
+    }
+    return false;
+  }
+
+  static const _strictPolicy = RedactionPolicy.strict();
+
+  /// Red: TODAS las peticiones con su detalle (ver el formato en
+  /// [ThorReplay]). Lo que llega aquí ya pasó por la política de
+  /// `Thor.run` (por defecto solo secretos tapados); en [ThorPrivacy.strict]
+  /// se re-redacta con `RedactionPolicy.strict()` y vuelve el formato
+  /// mínimo de antes.
   Map<String, Object?>? _slimNetwork(Map<String, Object?> p, String? at) {
     final url = (p['url'] as String?) ?? '';
-    if (_staticAsset.hasMatch(url)) return null;
+    if (_staticAsset.hasMatch(url) || _staticType(p['responseHeaders'])) {
+      return null;
+    }
     final status = p['statusCode'] as int?;
     final failed = status == null || status >= 400 || p['error'] != null;
-    return {
-      'm': p['method'],
-      'u': url.split('?').first,
-      's': status,
-      'd': p['durationMs'],
+    final err = p['errorMessage'];
+    final failure = {
       if (failed) ...{
-        'err': p['errorMessage'] ?? 'HTTP $status',
+        'err': err is String ? _scrub(err) : 'HTTP $status',
         'at': at,
       },
-      if (failed || _diagnostic) 'body': p['responseBody'],
+    };
+    if (_strict) return _slimNetworkStrict(p, url, failed, failure);
+    // Diagnóstico: todo lo que retuvo la captura (nunca menos que lo
+    // configurado).
+    final cap = _diagnostic
+        ? max(_config.maxBodyBytes, ThorNetworkCapture.maxBodyBytes)
+        : _config.maxBodyBytes;
+    final qb =
+        _clipBody(p['requestBody'], cap, omitted: p['requestBodyOmitted']);
+    final body =
+        _clipBody(p['responseBody'], cap, omitted: p['responseBodyOmitted']);
+    final qn = p['requestBytes'];
+    final rn = p['responseBytes'];
+    return {
+      'm': p['method'],
+      'u': url,
+      's': status,
+      'd': p['durationMs'],
+      if (p['requestHeaders'] case final Map<Object?, Object?> h
+          when h.isNotEmpty)
+        'qh': h,
+      if (p['responseHeaders'] case final Map<Object?, Object?> h
+          when h.isNotEmpty)
+        'rh': h,
+      if (qb.value != null) 'qb': qb.value,
+      if (qb.cut || p['requestBodyTruncated'] == true) 'qbt': true,
+      if (qn is int && qn > 0) 'qn': qn,
+      if (body.value != null) 'body': body.value,
+      if (body.cut || p['responseBodyTruncated'] == true) 'bt': true,
+      if (rn is int && rn > 0) 'rn': rn,
+      ...failure,
+    };
+  }
+
+  /// Un cuerpo para el replay: tal cual si cabe en [cap]; si no, el
+  /// principio de su JSON/texto (`cut`). Un binario omitido no viaja (su
+  /// tamaño va en `qn`/`rn`).
+  static ({Object? value, bool cut}) _clipBody(
+    Object? body,
+    int cap, {
+    Object? omitted,
+  }) {
+    if (body == null || omitted == true) return (value: null, cut: false);
+    final String text;
+    try {
+      text = body is String ? body : jsonEncode(body);
+    } on Object {
+      return (value: null, cut: false);
+    }
+    if (text.length <= cap) return (value: body, cut: false);
+    return (value: text.substring(0, max(0, cap)), cut: true);
+  }
+
+  /// El formato mínimo de [ThorPrivacy.strict] (el de siempre): exitosas
+  /// con lo esencial; fallidas con cuerpo de respuesta y origen; en
+  /// [_diagnostic] todas con cuerpos y headers. Re-redactado con
+  /// `RedactionPolicy.strict()` — idempotente si `Thor.run` ya era
+  /// estricto, y cierra la fuga si no lo era.
+  Map<String, Object?> _slimNetworkStrict(
+    Map<String, Object?> p,
+    String url,
+    bool failed,
+    Map<String, Object?> failure,
+  ) {
+    final uri = Uri.tryParse(url.split('?').first);
+    Object? body(String key) =>
+        p['${key}Omitted'] == true ? p[key] : _strictPolicy.redactValue(p[key]);
+    Map<String, String>? headers(Object? h) => h is Map
+        ? _strictPolicy.redactFlatMap({
+            for (final MapEntry(:key, :value) in h.entries) '$key': '$value',
+          })
+        : null;
+    return {
+      'm': p['method'],
+      'u': uri == null
+          ? url.split('?').first
+          : ThorNetworkCapture.redactUrl(uri, _strictPolicy).toString(),
+      's': p['statusCode'],
+      'd': p['durationMs'],
+      ...failure,
+      if (failed || _diagnostic) 'body': body('responseBody'),
       if (_diagnostic) ...{
-        if (p['requestBody'] != null) 'qb': p['requestBody'],
-        if (p['requestHeaders'] != null) 'qh': p['requestHeaders'],
-        if (p['responseHeaders'] != null) 'rh': p['responseHeaders'],
+        if (p['requestBody'] != null) 'qb': body('requestBody'),
+        if (headers(p['requestHeaders']) case final h?) 'qh': h,
+        if (headers(p['responseHeaders']) case final h?) 'rh': h,
       },
     };
   }

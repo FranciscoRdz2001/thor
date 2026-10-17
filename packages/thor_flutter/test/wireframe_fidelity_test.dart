@@ -407,6 +407,60 @@ void main() {
       await tester.pump();
       expect(kind('f').single[6], 8);
     });
+
+    // Texto visible (el default del replay): como un video, lo escrito se
+    // ve — salvo en un campo sensible, en NINGÚN modo.
+    List<List<Object?>> visibleFields() => [
+          for (final op in WireframeBuilder(maskText: false).build()!.ops)
+            if (op[0] == 'f') op,
+        ];
+
+    testWidgets('visible: un campo normal manda lo escrito', (tester) async {
+      await pump(tester, const SizedBox(width: 200, child: TextField()));
+      await tester.enterText(find.byType(TextField), 'leche deslactosada');
+      await tester.pump();
+      expect(visibleFields().single.sublist(6), [18, 'leche deslactosada']);
+    });
+
+    testWidgets('visible: un campo vacío no cambia de forma', (tester) async {
+      await pump(
+        tester,
+        const SizedBox(
+          width: 200,
+          child: TextField(
+            decoration: InputDecoration(hintText: 'Busca productos'),
+          ),
+        ),
+      );
+      expect(visibleFields().single.sublist(6), [0, 15]);
+    });
+
+    for (final (name, field) in [
+      ('obscureText', const TextField(obscureText: true)),
+      (
+        'teclado de contraseña visible',
+        const TextField(keyboardType: TextInputType.visiblePassword),
+      ),
+      (
+        'autofill de contraseña',
+        const TextField(autofillHints: [AutofillHints.password]),
+      ),
+      (
+        'autofill de tarjeta',
+        const TextField(autofillHints: [AutofillHints.creditCardNumber]),
+      ),
+    ]) {
+      testWidgets('visible: campo sensible ($name) jamás manda contenido',
+          (tester) async {
+        await pump(tester, SizedBox(width: 200, child: field));
+        await tester.enterText(find.byType(TextField), 'hunter2-4111');
+        await tester.pump();
+        final f = visibleFields().single;
+        expect(f.sublist(6), [8], reason: 'solo "lleno", largo fijo');
+        final all = jsonEncode(WireframeBuilder(maskText: false).build()!.ops);
+        expect(all, isNot(contains('hunter2')));
+      });
+    }
   });
 }
 

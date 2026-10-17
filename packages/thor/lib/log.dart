@@ -25,7 +25,7 @@ import 'package:thor/src/model/log_level.dart';
 import 'package:thor/src/thor_core.dart';
 
 /// Igual que `dart:developer` [developer.log] y además graba la línea en
-/// Thor (limpia de datos personales, ver `ThorCore.log`).
+/// Thor (sin secretos, ver `ThorCore.log`).
 ///
 /// Nivel: [level] en la escala de `package:logging` (900 warning, 1000
 /// severe…). Con el default `0` se deduce del texto, y una llamada con

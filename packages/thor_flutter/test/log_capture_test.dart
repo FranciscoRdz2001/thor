@@ -40,15 +40,26 @@ void main() {
       ThorCore.debugReset();
     });
 
-    test('print: llega a la consola INTACTO y se graba limpio', () {
+    test('print: llega a la consola INTACTO y se graba sin secretos', () {
       final out = <String>[];
       _withConsole(out, () => print('login ana@x.com token=abc123'));
       expect(out, ['login ana@x.com token=abc123']);
       final log = _logs().single;
       expect(log['source'], 'print');
       expect(log['level'], 'debug');
+      // Por defecto (solo secretos) el email queda: hace falta al depurar.
       expect(
         log['message'],
+        'login ana@x.com token=${RedactionPolicy.redactedMarker}',
+      );
+    });
+
+    test('strict: print se graba también sin datos personales', () async {
+      ThorCore.debugReset();
+      await ThorCore.init(redaction: const RedactionPolicy.strict());
+      _withConsole(<String>[], () => print('login ana@x.com token=abc123'));
+      expect(
+        _logs().single['message'],
         'login :email token=${RedactionPolicy.redactedMarker}',
       );
     });
@@ -195,11 +206,32 @@ void main() {
       }
     }
 
-    testWidgets('por defecto solo warn/error; en diagnóstico todos',
-        (tester) async {
+    testWidgets(
+        'por defecto solo warn/error; en diagnóstico todos; sin '
+        'secretos', (tester) async {
       await tester.pumpWidget(const MaterialApp(home: Text('x')));
       await tester.runAsync(
         () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+      );
+      Thor.log('sesión password=hunter2', level: ThorLogLevel.error);
+      ThorReplay.instance!.diagnostic = true;
+      Thor.log('diag token=abc123', level: ThorLogLevel.debug);
+
+      final logs = await logRecords(tester);
+      final body = jsonEncode(logs);
+      expect(body, isNot(contains('hunter2')));
+      expect(body, isNot(contains('abc123')));
+      expect(logs.map((p) => p['lv']), ['error', 'debug']);
+    });
+
+    testWidgets('strict: solo warn/error; en diagnóstico todos; sin emails',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: Text('x')));
+      await tester.runAsync(
+        () => ThorReplay.start(
+          const ThorReplayConfig(privacy: ThorPrivacy.strict),
+          directory: dir,
+        ),
       );
       logAllLevels('normal');
       Thor.mark('marca');

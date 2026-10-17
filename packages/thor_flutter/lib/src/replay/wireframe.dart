@@ -24,9 +24,10 @@ class ThorReplayIgnore extends StatelessWidget {
 
 /// Marca su subárbol como COPY de la interfaz (títulos, botones, menús
 /// escritos por la app): sus textos viajan legibles en el replay aunque
-/// `maskText` esté encendido, y los taps dentro conservan su label.
+/// `maskText` esté encendido, y los taps dentro conservan su label. Sin
+/// efecto con el texto visible (el default).
 ///
-/// Es la allowlist explícita del enmascarado: por defecto todo texto se
+/// Es la allowlist explícita del enmascarado: con `maskText` todo texto se
 /// enmascara porque el SDK no distingue "Pagar" de "Ana Pérez". Envolver
 /// solo lo que el desarrollador sabe que es copy fijo — nunca una celda
 /// con datos del usuario. Aun así, emails, números largos y tokens se
@@ -101,9 +102,12 @@ class Wireframe {
 /// - ícono:    `['i', x, y, w, h, vp, color, tamaño, codepoint, fuente]`
 /// - imagen:   `['m', x, y, w, h, vp]` (+ `url` solo con `imageUrls`;
 ///   `+ [url|null, radio]` si un recorte redondea la imagen)
-/// - campo:    `['f', x, y, w, h, vp, largoDelTexto]` (contenido jamás;
-///   con `obscureText` el largo es siempre 8 si hay algo escrito;
-///   `+ [largoDelHint]` solo vacío y con hint)
+/// - campo:    `['f', x, y, w, h, vp, largoDelTexto]`; `+ [largoDelHint]`
+///   solo vacío y con hint; `+ [texto]` (string) solo lleno, con el texto
+///   visible (sin `maskText`) y si NO es un campo sensible. Sensible =
+///   `obscureText`, autofill de contraseña/tarjeta/OTP o
+///   `TextInputType.visiblePassword`: su contenido jamás viaja, en ningún
+///   modo, y el largo es siempre 8 si hay algo escrito.
 /// - gráfico:  `['g', x, y, w, h, vp, tipo]` (0 = CustomPaint, 1 = vector
 ///   tipo SVG/Lottie, 2 = vista nativa: mapa, webview) `+ [radio]`
 /// - viewport: `['v', x, y, w, h, vpPadre, id, eje]`
@@ -173,11 +177,26 @@ class WireframeBuilder {
     if (widget is ThorReplayShowText) next = next.copyWith(showText: true);
     if (widget is Image) next = next.copyWith(url: _imageUrl(widget.image));
     // El hint lo escribe la app, no el usuario: su LARGO dibuja el campo
-    // vacío como en el dispositivo. El texto tecleado jamás viaja.
+    // vacío como en el dispositivo. Lo tecleado solo viaja con el texto
+    // visible y si el campo no es sensible (ver [_sensitiveField]).
     if (widget is TextField) {
-      next = next.copyWith(hint: widget.decoration?.hintText?.length ?? 0);
+      next = next.copyWith(
+        hint: widget.decoration?.hintText?.length ?? 0,
+        secret: _sensitiveField(
+          obscure: widget.obscureText,
+          keyboard: widget.keyboardType,
+          autofill: widget.autofillHints,
+        ),
+      );
     } else if (widget is CupertinoTextField) {
-      next = next.copyWith(hint: widget.placeholder?.length ?? 0);
+      next = next.copyWith(
+        hint: widget.placeholder?.length ?? 0,
+        secret: _sensitiveField(
+          obscure: widget.obscureText,
+          keyboard: widget.keyboardType,
+          autofill: widget.autofillHints,
+        ),
+      );
     }
 
     if (element is RenderObjectElement) {
@@ -218,6 +237,7 @@ class WireframeBuilder {
       url: ctx.url,
       hint: ctx.hint,
       showText: ctx.showText,
+      secret: ctx.secret,
     );
   }
 
@@ -285,12 +305,24 @@ class WireframeBuilder {
     } else if (ro is RenderImage) {
       _image(r, ctx, ctx.url, _clipRadius(r, ctx));
     } else if (ro is RenderEditable) {
-      final real = ro.text?.toPlainText().length ?? 0;
+      final text = ro.text?.toPlainText() ?? '';
+      final real = text.length;
       // Contraseña: ni el largo viaja (acota la fuerza bruta). Lleno o
-      // vacío, nada más: un lleno siempre mide [_obscuredLength].
-      final len = ro.obscureText && real > 0 ? _obscuredLength : real;
+      // vacío, nada más: un lleno siempre mide [_obscuredLength]. El
+      // render también sabe si oculta (un campo propio sin TextField).
+      final secret = ro.obscureText || ctx.secret;
+      final len = secret && real > 0 ? _obscuredLength : real;
       final hint = ctx.hint ?? 0;
-      _ops.add(['f', ..._box(r), vp, len, if (len == 0 && hint > 0) hint]);
+      _ops.add([
+        'f',
+        ..._box(r),
+        vp,
+        len,
+        if (len == 0 && hint > 0) hint,
+        // Como en un video: lo escrito se ve, salvo en un campo sensible
+        // (jamás, en ningún modo) o con el texto enmascarado.
+        if (real > 0 && !secret && !maskText) text,
+      ]);
     } else if (ro is RenderCustomPaint) {
       // Solo el painter de FONDO (o el de frente de una hoja): el de frente
       // con hijo es casi siempre adorno del framework (scrollbar, brillo
@@ -321,6 +353,27 @@ class WireframeBuilder {
 
   /// Largo fijo de un campo oculto (`obscureText`) con contenido.
   static const _obscuredLength = 8;
+
+  /// Autofill que delata un campo de secreto aunque no oculte el texto
+  /// (contraseña visible con el "ojito", tarjeta, código de un uso).
+  static const _secretAutofill = {
+    AutofillHints.password,
+    AutofillHints.newPassword,
+    AutofillHints.creditCardNumber,
+    AutofillHints.creditCardSecurityCode,
+    AutofillHints.oneTimeCode,
+  };
+
+  /// ¿El contenido de este campo es un secreto? `obscureText`, teclado de
+  /// contraseña visible o autofill de contraseña/tarjeta/OTP.
+  static bool _sensitiveField({
+    required bool obscure,
+    required TextInputType? keyboard,
+    required Iterable<String>? autofill,
+  }) =>
+      obscure ||
+      keyboard == TextInputType.visiblePassword ||
+      (autofill?.any(_secretAutofill.contains) ?? false);
 
   /// Render objects de paquetes de gráficos vectoriales (flutter_svg 2 vía
   /// vector_graphics, flutter_svg 1, lottie). Por nombre: el SDK no depende
@@ -632,6 +685,7 @@ class _Ctx {
     this.clip,
     this.hint,
     this.showText = false,
+    this.secret = false,
   });
 
   final int vp;
@@ -647,13 +701,25 @@ class _Ctx {
   /// Dentro de un [ThorReplayShowText].
   final bool showText;
 
-  _Ctx copyWith({String? url, _Clip? clip, int? hint, bool? showText}) => _Ctx(
+  /// Dentro de un campo sensible (contraseña, tarjeta): su contenido jamás
+  /// viaja.
+  final bool secret;
+
+  _Ctx copyWith({
+    String? url,
+    _Clip? clip,
+    int? hint,
+    bool? showText,
+    bool? secret,
+  }) =>
+      _Ctx(
         vp: vp,
         shift: shift,
         url: url ?? this.url,
         clip: clip ?? this.clip,
         hint: hint ?? this.hint,
         showText: showText ?? this.showText,
+        secret: secret ?? this.secret,
       );
 }
 

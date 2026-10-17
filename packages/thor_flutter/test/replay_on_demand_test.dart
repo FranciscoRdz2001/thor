@@ -98,8 +98,10 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
-  Future<void> start({bool config = true}) => ThorReplay.start(
+  Future<void> start({bool config = true, ThorPrivacy? privacy}) =>
+      ThorReplay.start(
         ThorReplayConfig(
+          privacy: privacy,
           endpoint: dash.ingestUrl,
           configEndpoint: config ? dash.configUrl : null,
           apiKey: 'app:0123456789abcdef',
@@ -127,20 +129,57 @@ void main() {
     expect(dash.ingested.first, contains('"t":"meta"'));
     expect(onMarker(), isTrue);
     await ThorReplay.stop();
-    // Sin modo diagnóstico, una exitosa no lleva cuerpo ni headers.
+    // Por defecto una exitosa ya lleva su detalle (sin modo diagnóstico).
     final net = dash.events('network').single;
-    expect(net.keys, isNot(contains('body')));
-    expect(net.keys, isNot(contains('qh')));
+    expect(net['body'], {'total': 99});
+    expect(net['qh'], {'authorization': RedactionPolicy.redactedMarker});
     expect(
       ThorNetworkCapture.ignoredPrefixes,
       containsAll([dash.configUrl.toString(), dash.ingestUrl.toString()]),
     );
   });
 
-  test('detail: successful requests keep redacted bodies, logs at all levels',
+  test('strict without detail: a success carries no body nor headers',
       () async {
+    dash.answer = jsonEncode({'upload': true, 'detail': false, 'until': null});
+    await start(privacy: ThorPrivacy.strict);
+    _networkEvent(status: 200);
+    await _until(() => dash.ingested.isNotEmpty, reason: 'subida');
+    await ThorReplay.stop();
+    final net = dash.events('network').single;
+    expect(net.keys, unorderedEquals(['m', 'u', 's', 'd']));
+    expect(net['u'], 'https://api.example.com/cart');
+  });
+
+  test('default detail: logs at all levels, body cap raised to 8 KB', () async {
     dash.answer = jsonEncode({'upload': true, 'detail': true, 'until': null});
     await start();
+    await _until(() => ThorReplay.instance!.diagnostic, reason: 'detail');
+    final big = 'x' * 6000;
+    ThorCore.instance!.recorder.record(ThorEventKind.network, {
+      'method': 'GET',
+      'url': 'https://api.example.com/big',
+      'durationMs': 3,
+      'statusCode': 200,
+      'responseBody': big,
+      'responseBytes': 6000,
+    });
+    Thor.log('detalle ana@x.com', level: ThorLogLevel.debug);
+    await ThorReplay.stop();
+
+    final net = dash.events('network').single;
+    expect(net['body'], big, reason: '6000 > 4096 pero < 8 KB');
+    expect(net.containsKey('bt'), isFalse);
+    final log = dash.events('log').single;
+    expect(log['lv'], 'debug');
+    expect(log['m'], 'detalle ana@x.com');
+  });
+
+  test(
+      'strict detail: successful requests keep redacted bodies, logs at all '
+      'levels', () async {
+    dash.answer = jsonEncode({'upload': true, 'detail': true, 'until': null});
+    await start(privacy: ThorPrivacy.strict);
     await _until(() => ThorReplay.instance!.diagnostic, reason: 'detail');
     _networkEvent(status: 200);
     Thor.log('detalle ana@x.com', level: ThorLogLevel.debug);
@@ -148,9 +187,11 @@ void main() {
 
     final net = dash.events('network').single;
     expect(net['s'], 200);
+    // Re-redactado con RedactionPolicy.strict(): solo claves estructurales.
+    const m = RedactionPolicy.redactedMarker;
     expect(net['body'], {'total': 99});
-    expect(net['qb'], {'sku': 'A1'});
-    expect(net['qh'], {'authorization': RedactionPolicy.redactedMarker});
+    expect(net['qb'], {'sku': m});
+    expect(net['qh'], {'authorization': m});
     expect(net['rh'], {'content-type': 'application/json'});
     expect(net['u'], 'https://api.example.com/cart');
     final log = dash.events('log').single;
@@ -158,18 +199,30 @@ void main() {
     expect(jsonEncode(dash.ingested), isNot(contains('ana@x.com')));
   });
 
-  test('requestUpload: uploads now with a report mark, reason scrubbed',
-      () async {
+  test(
+      'requestUpload: uploads now with a report mark, reason without '
+      'secrets', () async {
     await start(config: false);
     expect(onMarker(), isFalse);
-    await ThorReplay.requestUpload(reason: 'no carga, soy ana@x.com');
+    await ThorReplay.requestUpload(
+      reason: 'no carga, soy ana@x.com password=hunter2',
+    );
 
     expect(dash.configCalls, isEmpty);
     expect(dash.ingested.first, contains('"t":"meta"'));
     final report = dash.events('log').single;
     expect(report['l'], 'report');
-    expect(report['reason'], 'no carga, soy :email');
+    expect(
+      report['reason'],
+      'no carga, soy ana@x.com password=${RedactionPolicy.redactedMarker}',
+    );
     expect(onMarker(), isTrue);
+  });
+
+  test('strict: requestUpload reason scrubbed of personal data', () async {
+    await start(config: false, privacy: ThorPrivacy.strict);
+    await ThorReplay.requestUpload(reason: 'no carga, soy ana@x.com');
+    expect(dash.events('log').single['reason'], 'no carga, soy :email');
   });
 
   test('requestUpload without replay is a no-op', () async {
@@ -228,19 +281,117 @@ void main() {
     expect(dash.configCalls[1]['props'], {'email': 'ana@x.com'});
   });
 
-  test('an uploaded error message is scrubbed like logs', () async {
+  void recordError() =>
+      ThorCore.instance!.recorder.record(ThorEventKind.error, {
+        'type': 'StateError',
+        'message': 'Bad state: cliente ana@x.com tel 55 1234 5678 token=abc',
+        'source': 'zone',
+      });
+
+  test('an uploaded error message keeps its data, loses its secrets', () async {
     await start(config: false);
-    ThorCore.instance!.recorder.record(ThorEventKind.error, {
-      'type': 'StateError',
-      'message': 'Bad state: cliente ana@x.com tel 55 1234 5678 token=abc',
-      'source': 'zone',
-    });
+    recordError();
+    await _until(() => dash.events('error').isNotEmpty, reason: 'error');
+    const m = RedactionPolicy.redactedMarker;
+    expect(
+      dash.events('error').single['msg'],
+      'Bad state: cliente ana@x.com tel 55 1234 5678 token=$m',
+    );
+  });
+
+  test('strict: an uploaded error message is scrubbed like logs', () async {
+    await start(config: false, privacy: ThorPrivacy.strict);
+    recordError();
     await _until(() => dash.events('error').isNotEmpty, reason: 'error');
     const m = RedactionPolicy.redactedMarker;
     expect(
       dash.events('error').single['msg'],
       'Bad state: cliente :email tel :n token=$m',
     );
+  });
+
+  test(
+      'network contract: every request with full detail; truncation, sizes, '
+      'failures; images never', () async {
+    await start(config: false);
+    final core = ThorCore.instance!;
+    final bigBody = {
+      'items': [for (var i = 0; i < 400; i++) 'producto-$i'],
+    };
+    core.recorder
+      ..record(ThorEventKind.network, {
+        'method': 'GET',
+        'url': 'https://api.example.com/clientes/ana@mail.com?tienda=431',
+        'durationMs': 40,
+        'statusCode': 200,
+        'requestHeaders': {'x-app': '3.2'},
+        'requestBytes': 0,
+        'responseHeaders': {'content-type': 'application/json'},
+        'responseBody': bigBody,
+        'responseBytes': 20000,
+        'responseBodyTruncated': true,
+      })
+      ..record(ThorEventKind.network, {
+        'method': 'GET',
+        'url': 'https://cdn.example.com/p/123',
+        'durationMs': 5,
+        'statusCode': 200,
+        'responseHeaders': {'Content-Type': 'image/webp'},
+        'responseBody': '<omitido: 9000 bytes, image/webp>',
+        'responseBodyOmitted': true,
+      })
+      ..record(ThorEventKind.network, {
+        'method': 'GET',
+        'url': 'https://api.example.com/logo.png',
+        'durationMs': 5,
+        'statusCode': 200,
+      })
+      ..record(ThorEventKind.network, {
+        'method': 'POST',
+        'url': 'https://api.example.com/upload',
+        'durationMs': 5,
+        'statusCode': 201,
+        'requestBody': '<omitido: 512 bytes, application/pdf>',
+        'requestBodyOmitted': true,
+        'requestBytes': 512,
+      })
+      ..record(
+        ThorEventKind.network,
+        {
+          'method': 'POST',
+          'url': 'https://api.example.com/pagar',
+          'durationMs': 90,
+          'statusCode': 502,
+          'requestBody': {'monto': 99},
+          'responseBody': {'message': 'gateway'},
+        },
+        origin: 'lib/pago.dart:42',
+      );
+    await ThorReplay.stop();
+    final nets = dash.events('network');
+    expect(nets, hasLength(3), reason: 'imágenes fuera');
+
+    final ok = nets[0];
+    expect(ok['u'], 'https://api.example.com/clientes/ana@mail.com?tienda=431');
+    expect(ok['qh'], {'x-app': '3.2'});
+    expect(ok['rh'], {'content-type': 'application/json'});
+    expect(ok['body'], isA<String>(), reason: 'cortado: viaja como texto');
+    expect((ok['body']! as String).length, 4096);
+    expect(ok['bt'], isTrue);
+    expect(ok['rn'], 20000);
+    expect(ok.containsKey('err'), isFalse);
+    expect(ok.containsKey('qn'), isFalse, reason: 'sin cuerpo de petición');
+
+    final pdf = nets[1];
+    expect(pdf.containsKey('qb'), isFalse, reason: 'binario: solo tamaño');
+    expect(pdf['qn'], 512);
+
+    final failed = nets[2];
+    expect(failed['s'], 502);
+    expect(failed['err'], 'HTTP 502');
+    expect(failed['at'], 'lib/pago.dart:42');
+    expect(failed['qb'], {'monto': 99});
+    expect(failed['body'], {'message': 'gateway'});
   });
 
   test('an error after uploading already started goes up right away', () async {

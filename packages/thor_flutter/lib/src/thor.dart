@@ -63,14 +63,23 @@ class Thor {
   ///   ignorar y el daño es silencioso. Thor la llama YA dentro de su zona
   ///   y con el binding listo. `path_provider` sigue siendo decisión del
   ///   caller: Thor no lo impone.
+  /// - [redaction]: qué se tapa de lo capturado. Por defecto
+  ///   [RedactionPolicy.secretsOnly]: solo secretos (`Authorization`,
+  ///   cookies, tokens, API keys, contraseñas, tarjeta/CVV/PIN, en headers,
+  ///   query y a cualquier profundidad de los cuerpos JSON); URLs
+  ///   completas, headers normales, cuerpos, emails, ids y nombres pasan
+  ///   tal cual para poder depurar servicios. Apps sensibles:
+  ///   `RedactionPolicy.strict()` (allowlist + sin datos con forma
+  ///   personal en rutas, logs, errores y labels).
   /// - [appInfo] / [installId]: identidad para la cabecera de sesión.
   /// - [capture]: tope de ráfagas de estado por bloc y aligerado de las
   ///   peticiones exitosas en el journal (ver [ThorCapturePolicy]).
   /// - [infraPackages]: paquetes propios que son infraestructura (tu SDK
   ///   de red, por ejemplo) y deben saltarse al resolver el
   ///   `archivo:línea` de origen.
-  /// - [captureLogs]: graba `print` y `debugPrint` como logs (limpios de
-  ///   datos personales, recortados y con tope de ráfagas — ver
+  /// - [captureLogs]: graba `print` y `debugPrint` como logs (sin secretos
+  ///   —y sin datos personales con `strict()`—, recortados y con tope de
+  ///   ráfagas — ver
   ///   [ThorCapturePolicy.logBurstLimit]). La consola los sigue mostrando
   ///   igual. `dart:developer` `log()` no se puede interceptar: ver
   ///   [log].
@@ -79,7 +88,7 @@ class Thor {
     bool enabled = kDebugMode,
     bool showOverlay = true,
     FutureOr<Directory?> Function()? storageDirectory,
-    RedactionPolicy redaction = const RedactionPolicy.strict(),
+    RedactionPolicy redaction = const RedactionPolicy.secretsOnly(),
     BufferQuotas? quotas,
     String? installId,
     Map<String, String> appInfo = const {},
@@ -213,8 +222,10 @@ class Thor {
   /// con su misma firma: migrar es cambiar el import
   /// (`import 'dart:developer';` → `import 'package:thor_flutter/log.dart';`).
   ///
-  /// El mensaje, [name] y [error] se limpian de emails, números largos,
-  /// tokens y secretos antes de grabarse, y se recortan.
+  /// El mensaje, [name] y [error] se limpian de secretos (`Bearer …`,
+  /// `token=…`, `password=…`) antes de grabarse, y se recortan; con
+  /// `RedactionPolicy.strict()` también de emails, números largos y
+  /// tokens sueltos.
   static void log(
     String message, {
     ThorLogLevel level = ThorLogLevel.info,
@@ -250,8 +261,9 @@ class Thor {
   /// de tiempo, en el reporte y en el replay (`{"t":"user"}`), y el
   /// dashboard busca sesiones por él.
   ///
-  /// [id]: un id OPACO (tu id interno de cliente), guardado tal cual; uno
-  /// con forma de email se redacta. [props]: JSON libre con lo que quieras
+  /// [id]: tu id interno de cliente, guardado tal cual (con
+  /// `RedactionPolicy.strict()` uno con forma de email se redacta: ahí
+  /// pasa uno opaco). [props]: JSON libre con lo que quieras
   /// ver al depurar a esa persona (email, nombre, tienda, plan…). Se guarda
   /// en claro porque lo mandas a propósito, salvo claves de secreto
   /// (contraseña, token, tarjeta…). Máximo ~4 KB.

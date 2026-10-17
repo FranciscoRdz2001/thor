@@ -115,10 +115,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('thor_tabs');
     await tester.pumpWidget(tabs(0));
     await tester.runAsync(
-      () => ThorReplay.start(
-        const ThorReplayConfig(maskText: false),
-        directory: dir,
-      ),
+      () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
     );
     await tester.pump(const Duration(milliseconds: 300));
     await tester.runAsync(ThorReplay.stop);

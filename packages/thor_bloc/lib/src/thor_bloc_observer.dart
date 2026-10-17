@@ -18,7 +18,8 @@ import 'package:thor/thor.dart';
 /// (`PayPressed → CheckoutLoading → CheckoutError`) — esa línea da el 80%
 /// del valor de debugging sin fugar nada. Los VALORES solo se capturan si
 /// `RedactionPolicy.captureStateValues` es `true`, y aun así pasan por la
-/// allowlist.
+/// política (con la de por defecto, solo se tapan las claves de secreto;
+/// con `RedactionPolicy.strict()`, la allowlist).
 class ThorBlocObserver extends BlocObserver {
   /// Crea el observer. [delegate] es el observer previo de la app.
   const ThorBlocObserver({this.delegate});

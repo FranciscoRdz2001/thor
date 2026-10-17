@@ -28,7 +28,7 @@ class ThorCapturePolicy {
   ///   warn/error llevan su propio cupo: el ruido de debug no las ahoga.
   ///   `0` desactiva el tope.
   /// - [maxLogLength]: largo máximo del mensaje de un log (ya limpio de
-  ///   datos personales); lo demás se trunca con `…(+N)`.
+  ///   secretos); lo demás se trunca con `…(+N)`.
   const ThorCapturePolicy({
     this.stateBurstLimit = 3,
     this.stateBurstWindow = const Duration(seconds: 1),

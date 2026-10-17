@@ -1,16 +1,46 @@
+/// Qué tapa una [RedactionPolicy].
+enum RedactionMode {
+  /// Solo SECRETOS (default de `Thor.run` y del replay): contraseñas,
+  /// tokens, cookies, `Authorization`, API keys, client secrets, tarjeta,
+  /// CVV, PIN. Todo lo demás —emails, ids, nombres, direcciones, teléfonos,
+  /// headers normales, rutas de URL— pasa TAL CUAL: sin eso no se puede
+  /// depurar un servicio (qué usuario, qué pedido, qué respondió el
+  /// backend). Los secretos se buscan por clave a cualquier profundidad
+  /// (headers, query, JSON) y en texto libre (`token=…`, `Bearer …`).
+  secretsOnly,
+
+  /// Allowlist (opt-in para apps sensibles): solo pasa en claro lo que la
+  /// app declara seguro en `allowedKeys`; las rutas de URL y los textos
+  /// libres (logs, errores, labels) pierden además lo que tenga forma de
+  /// dato personal (`:email`, `:n`, `:token`).
+  allowlist,
+}
+
 /// Política de redacción de Thor.
 ///
-/// Diseño deliberadamente **allowlist**: por defecto los valores sensibles se
-/// tapan y solo pasa en claro lo que la app declara seguro. Una denylist
-/// ("tapa estos campos") falla en silencio cuando aparece un campo nuevo con
-/// PII; una allowlist falla hacia el lado seguro.
+/// Dos modos ([RedactionMode]):
+/// - [RedactionPolicy.secretsOnly] (default): tapa SOLO secretos. Thor es
+///   una herramienta para depurar servicios: ofuscar emails, ids y cuerpos
+///   enteros dejaba el análisis sin la información que hace falta.
+/// - [RedactionPolicy.strict] / el constructor con `allowedKeys`:
+///   **allowlist** — por defecto los valores se tapan y solo pasa en claro
+///   lo que la app declara seguro. Una denylist falla en silencio cuando
+///   aparece un campo nuevo con PII; una allowlist falla hacia el lado
+///   seguro. Es el modo para apps sensibles (salud, banca) que lo piden.
+///
+/// En los dos modos los secretos ([isSecretKey], [scrubSecrets]) jamás
+/// pasan.
 class RedactionPolicy {
-  /// Crea una política.
+  /// Crea una política en modo [RedactionMode.allowlist] (salvo que se
+  /// pida [mode]).
   ///
   /// - [allowedKeys]: claves (case-insensitive) cuyos valores pasan en claro
-  ///   en cualquier mapa (headers, bodies, query, estado).
+  ///   en cualquier mapa (headers, bodies, query, estado). Solo cuenta en
+  ///   modo allowlist.
   /// - [allowedBodyContentTypes]: content-types cuyos cuerpos se capturan;
-  ///   cualquier otro se registra solo como `<omitido: N bytes>`.
+  ///   cualquier otro se registra solo como `<omitido: N bytes>`. En modo
+  ///   [RedactionMode.secretsOnly] se capturan además los de texto (ver
+  ///   [capturesBody]).
   /// - [maxValueLength]: los valores en claro se truncan a este largo.
   /// - [captureStateValues]: si `false`, de los estados de bloc solo se
   ///   registran los TIPOS (`CheckoutError`), nunca los valores.
@@ -19,10 +49,24 @@ class RedactionPolicy {
     this.allowedBodyContentTypes = const {'application/json'},
     this.maxValueLength = 2048,
     this.captureStateValues = false,
+    this.mode = RedactionMode.allowlist,
   });
 
-  /// Política estricta: nada de valores de estado, solo claves
-  /// estructurales comunes en claro. Punto de partida recomendado.
+  /// Solo secretos: el default de `Thor.run`. Headers, query, cuerpos
+  /// JSON/texto, rutas, logs, errores y labels pasan tal cual salvo los
+  /// secretos (por clave a cualquier profundidad y en texto libre).
+  const RedactionPolicy.secretsOnly({
+    int maxValueLength = 2048,
+    bool captureStateValues = false,
+  }) : this(
+          maxValueLength: maxValueLength,
+          captureStateValues: captureStateValues,
+          mode: RedactionMode.secretsOnly,
+        );
+
+  /// Política estricta (opt-in para apps sensibles): allowlist con solo
+  /// claves estructurales comunes en claro, rutas de URL y textos libres
+  /// sin datos con forma personal, nada de valores de estado.
   const RedactionPolicy.strict()
       : this(
           allowedKeys: const {
@@ -32,6 +76,12 @@ class RedactionPolicy {
             'content-type', 'content-length', 'accept',
           },
         );
+
+  /// Modo de la política.
+  final RedactionMode mode;
+
+  /// ¿Tapa solo secretos ([RedactionMode.secretsOnly])?
+  bool get isSecretsOnly => mode == RedactionMode.secretsOnly;
 
   /// Claves permitidas, normalizadas por [_normalize] al comparar.
   final Set<String> allowedKeys;
@@ -82,12 +132,27 @@ class RedactionPolicy {
   /// (`userPassword`, `authToken`, `numeroTarjeta`).
   static bool isSecretKey(String key) {
     final k = _normalize(key);
-    return _hardDenied.contains(k) || _secretFragment.hasMatch(k);
+    return _hardDenied.contains(k) ||
+        _secretExact.contains(k) ||
+        _secretFragment.hasMatch(k);
   }
 
+  // Claves cortas que solo son secreto COMPLETAS: como fragmento romperían
+  // claves normales (`shipping_pin`, `spinner`, `photo`).
+  static const _secretExact = {
+    'pin',
+    'nip',
+    'pwd',
+    'passwd',
+    'otp',
+    'cvc',
+  };
+
+  // `token` cubre access/refresh/id/x-auth-token; `jwt` y `bearer` los
+  // campos que guardan el token con otro nombre.
   static final _secretFragment = RegExp(
     'password|contrase|secret|token|authorization|cookie|api_?key|cvv|cvc|'
-    'card_?number|tarjeta|private_?key',
+    'card_?number|tarjeta|private_?key|jwt|bearer|credential',
   );
 
   /// Copia de [value] (JSON: mapas, listas, primitivos) donde el valor de
@@ -217,18 +282,54 @@ class RedactionPolicy {
   }
 
   /// ¿El valor de esta clave puede pasar en claro?
+  ///
+  /// Solo secretos: toda clave que no sea de secreto ([isSecretKey]).
+  /// Allowlist: solo las de [allowedKeys], y nunca las de [_hardDenied].
   bool isKeyAllowed(String key) {
+    if (isSecretsOnly) return !isSecretKey(key);
     final k = _normalize(key);
     if (_hardDenied.contains(k)) return false;
     return allowedKeys.map(_normalize).contains(k);
   }
 
+  /// [text] limpio según el modo, para texto libre que sale del
+  /// dispositivo (logs, mensajes de error, labels, nombres de ruta):
+  /// [scrubSecrets] en solo secretos; [scrubText] (secretos + forma de
+  /// dato personal) en allowlist.
+  String scrub(String text) =>
+      isSecretsOnly ? scrubSecrets(text) : scrubText(text);
+
+  /// ¿Se captura el cuerpo de este content-type?
+  ///
+  /// Allowlist: solo [allowedBodyContentTypes]. Solo secretos: además todo
+  /// lo que es texto (JSON con sufijo `+json`, `text/*`, XML, formularios,
+  /// GraphQL): es lo que hace falta para depurar un servicio. Binarios
+  /// (imágenes, PDFs, octet-stream) jamás: solo su tamaño.
+  bool capturesBody(String? mimeType) {
+    final mime = mimeType ?? 'application/octet-stream';
+    if (allowedBodyContentTypes.contains(mime)) return true;
+    if (!isSecretsOnly) return false;
+    return mime.startsWith('text/') ||
+        mime.endsWith('+json') ||
+        mime.endsWith('/json') ||
+        mime.endsWith('+xml') ||
+        mime.endsWith('/xml') ||
+        mime == 'application/x-www-form-urlencoded' ||
+        mime == 'application/graphql';
+  }
+
   /// Redacta recursivamente un valor JSON-compatible.
   ///
-  /// Mapas: cada entrada pasa por la allowlist. Listas: elemento a elemento.
-  /// Escalares sueltos (sin clave que los ampare) se conservan solo si
-  /// [keyAllowed] es `true`.
+  /// Solo secretos: el valor de toda clave de secreto, a cualquier
+  /// profundidad, es [redactedMarker]; los textos pasan por
+  /// [scrubSecrets] (un `"nota": "Bearer x"` pierde el token) y se
+  /// truncan; lo demás, tal cual.
+  ///
+  /// Allowlist: cada entrada de un mapa pasa por la allowlist. Listas:
+  /// elemento a elemento. Escalares sueltos (sin clave que los ampare) se
+  /// conservan solo si [keyAllowed] es `true`.
   Object? redactValue(Object? value, {bool keyAllowed = false}) {
+    if (isSecretsOnly) return _redactSecretsDeep(value);
     switch (value) {
       case null:
         return null;
@@ -250,10 +351,26 @@ class RedactionPolicy {
     }
   }
 
+  Object? _redactSecretsDeep(Object? value) => switch (value) {
+        final Map<Object?, Object?> m => {
+            for (final MapEntry(:key, value: v) in m.entries)
+              '$key':
+                  isSecretKey('$key') ? redactedMarker : _redactSecretsDeep(v),
+          },
+        final List<Object?> l => [for (final v in l) _redactSecretsDeep(v)],
+        final String s => _truncate(scrubSecrets(s)),
+        _ => value,
+      };
+
   /// Redacta un mapa de cabeceras HTTP (o similar clave→valor plano).
+  ///
+  /// En solo secretos el valor de una cabecera normal pasa además por
+  /// [scrubSecrets]: un `x-debug: token=abc` no fuga el token.
   Map<String, String> redactFlatMap(Map<String, String> input) => {
         for (final MapEntry(:key, :value) in input.entries)
-          key: isKeyAllowed(key) ? _truncate(value) : redactedMarker,
+          key: !isKeyAllowed(key)
+              ? redactedMarker
+              : _truncate(isSecretsOnly ? scrubSecrets(value) : value),
       };
 
   Object? _clamp(Object? v) => v is String ? _truncate(v) : v;

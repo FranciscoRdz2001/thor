@@ -18,7 +18,7 @@ import 'package:thor/thor.dart';
 ///
 /// "Apagado = inofensivo": sin `Thor.run` nada de esto se instala; con
 /// Thor, la consola recibe exactamente lo mismo que antes y además se
-/// graba (limpio de datos personales, ver `ThorCore.log`).
+/// graba (sin secretos, ver `ThorCore.log`).
 class LogCapture {
   LogCapture._();
 

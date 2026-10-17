@@ -45,11 +45,27 @@ void main() {
         ),
       );
 
-  testWidgets('route names from deep links are scrubbed in the replay',
+  testWidgets('default: deep-link route names stay readable, secrets out',
       (tester) async {
     await tester.pumpWidget(app('Hola'));
     await tester.runAsync(
       () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+    );
+    Thor.setScreen('/orders/10293847?token=abc123secret');
+    await tester.pump(const Duration(milliseconds: 100));
+    final body = jsonEncode(await records(tester));
+    expect(body, contains('/orders/10293847'));
+    expect(body, isNot(contains('abc123secret')));
+  });
+
+  testWidgets('strict: route names from deep links are scrubbed in the replay',
+      (tester) async {
+    await tester.pumpWidget(app('Hola'));
+    await tester.runAsync(
+      () => ThorReplay.start(
+        const ThorReplayConfig(privacy: ThorPrivacy.strict),
+        directory: dir,
+      ),
     );
     Thor.setScreen('/orders/10293847');
     await tester.pump(const Duration(milliseconds: 100));
@@ -58,11 +74,33 @@ void main() {
     expect(body, contains('/orders/:n'));
   });
 
-  testWidgets('a screen state travels as block refs; blocks once, no URLs',
-      (tester) async {
+  testWidgets(
+      'default: screen text is visible, like a video; ignored '
+      'subtrees still never leave', (tester) async {
     await tester.pumpWidget(app('Hola'));
     await tester.runAsync(
       () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final all = await records(tester);
+    final blocks = all.whereType<List<Object?>>().where((r) => r[0] == 'blk');
+    final texts = blocks
+        .expand((b) => b[2]! as List)
+        .where((op) => (op as List)[0] == 't');
+    expect(texts.map((op) => (op as List).last), contains('Hola'));
+    expect(jsonEncode(all), isNot(contains('secreto')));
+  });
+
+  testWidgets(
+      'strict: a screen state travels as block refs; blocks once, '
+      'masked text, no URLs', (tester) async {
+    await tester.pumpWidget(app('Hola'));
+    await tester.runAsync(
+      () => ThorReplay.start(
+        const ThorReplayConfig(privacy: ThorPrivacy.strict),
+        directory: dir,
+      ),
     );
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -73,7 +111,7 @@ void main() {
     expect(blocks, isNotEmpty);
 
     final body = jsonEncode(all);
-    // Masked by default; ignored subtrees and image URLs never leave.
+    // Masked in strict; ignored subtrees and image URLs never leave.
     expect(body, isNot(contains('Hola')));
     // Masked text travels as word lengths: "Hola" → [4].
     final texts = blocks
@@ -92,6 +130,40 @@ void main() {
     final refs = (states.single[5]! as List).map((r) => (r as List)[0]);
     final written = blocks.map((b) => b[1]).toSet();
     expect(written.containsAll(refs), isTrue);
+  });
+
+  testWidgets(
+      'default: a password never leaves, neither screen nor tap; '
+      'a normal field does', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              TextField(key: ValueKey('correo')),
+              TextField(
+                obscureText: true,
+                decoration: InputDecoration(labelText: 'Contraseña'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    InteractionCapture.install();
+    addTearDown(InteractionCapture.uninstall);
+    await tester.runAsync(
+      () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+    );
+    await tester.enterText(find.byType(TextField).first, 'ana@mail.com');
+    await tester.tap(find.byType(TextField).last);
+    await tester.enterText(find.byType(TextField).last, 'hunter2-secreta');
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final body = jsonEncode(await records(tester));
+    expect(body, isNot(contains('hunter2')));
+    expect(body, contains('ana@mail.com'));
+    expect(body, contains('Contraseña'), reason: 'el label es copy');
   });
 
   testWidgets('user identity: uid in meta when known, user record on change',
@@ -130,10 +202,7 @@ void main() {
   testWidgets('going back to a seen state sends only a ref', (tester) async {
     await tester.pumpWidget(app('Uno'));
     await tester.runAsync(
-      () => ThorReplay.start(
-        const ThorReplayConfig(maskText: false),
-        directory: dir,
-      ),
+      () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
     );
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pumpWidget(app('Dos'));

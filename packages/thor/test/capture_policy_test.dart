@@ -337,8 +337,19 @@ void main() {
       await core.dispose();
     });
 
-    test('un id con forma de email jamás se guarda en claro', () async {
+    test(
+        'por defecto (solo secretos) un id con forma de email se guarda tal '
+        'cual: es lo que se busca al depurar', () async {
       final core = await ThorCore.init()
+        ..setUser('ana.perez@gmail.com');
+      expect(core.userId, 'ana.perez@gmail.com');
+      await core.dispose();
+    });
+
+    test('strict: un id con forma de email jamás se guarda en claro', () async {
+      final core = await ThorCore.init(
+        redaction: const RedactionPolicy.strict(),
+      )
         ..setUser('ana.perez@gmail.com');
       expect(core.userId, RedactionPolicy.redactedMarker);
       final user = core.store

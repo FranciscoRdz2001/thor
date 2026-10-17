@@ -84,9 +84,16 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
   }
 
-  testWidgets('tap on a ListTile with personal data: masked, no key',
+  // Enmascarado = opt-in (maskText o ThorPrivacy.strict). El default
+  // manda el texto visible: ver los tests "default:" al final.
+  const masked = ThorReplayConfig(maskText: true);
+
+  testWidgets('strict: tap on a ListTile with personal data: masked, no key',
       (tester) async {
-    await start(tester, const ThorReplayConfig());
+    await start(
+      tester,
+      const ThorReplayConfig(privacy: ThorPrivacy.strict),
+    );
     await tester.tap(find.text('Ana Pérez'));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -107,9 +114,9 @@ void main() {
     expect(local.payload.containsKey('copy'), isFalse);
   });
 
-  testWidgets('high-level button copy stays readable; key scrubbed',
+  testWidgets('masked: high-level button copy stays readable; key scrubbed',
       (tester) async {
-    await start(tester, const ThorReplayConfig());
+    await start(tester, masked);
     await tester.tap(find.text('Pagar'));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -119,9 +126,9 @@ void main() {
     expect(tap['k'], 'pagar-:n');
   });
 
-  testWidgets('ThorReplayShowText: screen text and tap label unmasked',
+  testWidgets('masked: ThorReplayShowText: screen text and tap label unmasked',
       (tester) async {
-    await start(tester, const ThorReplayConfig());
+    await start(tester, masked);
     await tester.tap(find.text('Mis pedidos'));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -141,9 +148,12 @@ void main() {
     expect(texts, isNot(contains('Ana Pérez')));
   });
 
-  testWidgets('unmaskedTexts: exact l10n strings travel readable',
+  testWidgets('masked: unmaskedTexts: exact l10n strings travel readable',
       (tester) async {
-    await start(tester, const ThorReplayConfig(unmaskedTexts: {'Ajustes'}));
+    await start(
+      tester,
+      const ThorReplayConfig(maskText: true, unmaskedTexts: {'Ajustes'}),
+    );
     await tester.tap(find.text('Ajustes'));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -156,7 +166,7 @@ void main() {
 
   testWidgets('tap inside ThorReplayIgnore: neither label nor key',
       (tester) async {
-    await start(tester, const ThorReplayConfig(maskText: false));
+    await start(tester, const ThorReplayConfig());
     await tester.tap(find.text('Tarjeta 4111'));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -166,9 +176,43 @@ void main() {
     expect(jsonEncode(all), isNot(contains('Tarjeta')));
   });
 
-  testWidgets('maskText off: labels readable but always scrubbed',
+  testWidgets('default: labels and keys readable as is (no masking)',
       (tester) async {
-    await start(tester, const ThorReplayConfig(maskText: false));
+    await start(tester, const ThorReplayConfig());
+    await tester.tap(find.text('Ana Pérez'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final all = await records(tester);
+    final tap = taps(all).single;
+    expect(tap['l'], 'Ana Pérez');
+    expect(tap['k'], 'cliente-ana@mail.com');
+    // Y la pantalla se ve como un video.
+    expect(jsonEncode(all), contains('"ana@mail.com"'));
+  });
+
+  testWidgets('default: a label keeps its data but never a secret',
+      (tester) async {
+    await start(tester, const ThorReplayConfig());
+    ThorCore.instance!.recorder.record(ThorEventKind.interaction, {
+      'gesture': 'tap',
+      'via': 'semantics',
+      'label': 'Ana ana@mail.com token=abc123',
+      'widget': 'Button',
+    });
+
+    final tap = taps(await records(tester)).single;
+    expect(
+      tap['l'],
+      'Ana ana@mail.com token=${RedactionPolicy.redactedMarker}',
+    );
+  });
+
+  testWidgets('masked, maskText on: Key scrubbed with the label readable',
+      (tester) async {
+    await start(
+      tester,
+      const ThorReplayConfig(maskText: true, unmaskedTexts: {'Ana Pérez'}),
+    );
     await tester.tap(find.text('Ana Pérez'));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -179,9 +223,9 @@ void main() {
     expect(tap['k'], ':email');
   });
 
-  testWidgets('semantics-channel labels (merged children) are masked',
+  testWidgets('masked: semantics-channel labels (merged children) are masked',
       (tester) async {
-    await start(tester, const ThorReplayConfig());
+    await start(tester, masked);
     ThorCore.instance!.recorder.record(ThorEventKind.interaction, {
       'gesture': 'tap',
       'via': 'semantics',
