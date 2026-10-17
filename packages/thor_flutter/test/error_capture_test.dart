@@ -50,5 +50,26 @@ void main() {
 
       FlutterError.onError = original;
     });
+
+    test('el mensaje llega al journal sin secretos, el resto legible', () {
+      // `install` es idempotente y el test anterior restauró
+      // FlutterError.onError: se entra por el handler de plataforma, que
+      // sigue siendo el de Thor.
+      ErrorCapture.install();
+      PlatformDispatcher.instance.onError!(
+        Exception(
+          'GET https://api.x.io/u/ana@mail.com?token=tk-9 falló, '
+          'headers: {Authorization: Bearer abcdefgh123}',
+        ),
+        StackTrace.current,
+      );
+      final msg = ThorCore.instance!.store
+          .ofKind(ThorEventKind.error)
+          .last
+          .payload['message']! as String;
+      expect(msg, isNot(contains('tk-9')));
+      expect(msg, isNot(contains('abcdefgh123')));
+      expect(msg, contains('ana@mail.com'));
+    });
   });
 }

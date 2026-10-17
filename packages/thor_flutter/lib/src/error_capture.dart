@@ -133,8 +133,12 @@ class ErrorCapture {
         'type': error.runtimeType.toString(),
         // El mensaje del error puede traer PII (p.ej. un Exception con el
         // email en el texto) — se trunca, y la política decide en el
-        // reporte si se muestra completo.
-        'message': _truncate(error.toString(), 500),
+        // reporte si se muestra completo. Los SECRETOS no esperan al
+        // reporte: un `DioException` con `Authorization: Bearer …` o una
+        // URL con `?token=` no debe tocar el journal en disco.
+        'message': RedactionPolicy.scrubSecrets(
+          _truncate(error.toString(), 500),
+        ),
         if (library != null) 'library': library,
         if (stack != null) 'stack': _truncate(stack.toString(), 4000),
         // "¿Qué fue lo último que hizo el usuario?" — la pregunta #1 al
