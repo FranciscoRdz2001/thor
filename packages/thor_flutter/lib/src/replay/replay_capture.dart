@@ -23,6 +23,7 @@ class ThorReplayConfig {
     this.idle = const Duration(milliseconds: 250),
     this.maxGap = const Duration(milliseconds: 1200),
     this.snapshotBudget = const Duration(milliseconds: 8),
+    this.apiKey,
   });
 
   /// Enmascara todo el texto (default). Apagar solo en entornos propios.
@@ -33,6 +34,10 @@ class ThorReplayConfig {
 
   /// URL de ingesta (`POST`, cuerpo gzip NDJSON). `null` = solo disco.
   final Uri? endpoint;
+
+  /// Llave de la app para la ingesta (header `x-thor-key`). El servidor
+  /// rechaza sin ella (401) salvo en desarrollo.
+  final String? apiKey;
 
   /// Fracción de sesiones que se suben siempre (0–1). El resto se graba
   /// en disco y solo se sube si pasa algo ([uploadOnError]).
@@ -245,7 +250,7 @@ class ThorReplay {
         _instance = ThorReplay._(config, core, file, sampled).._install();
     if (sampled) replay._markEnabled();
     if (directory != null && config.endpoint != null) {
-      unawaited(_recover(directory, config.endpoint!, file!));
+      unawaited(_recover(directory, config.endpoint!, config.apiKey, file!));
     }
   }
 
@@ -253,12 +258,18 @@ class ThorReplay {
   /// muestra o con error — marca `.on`) suben lo que les faltó; las demás
   /// se borran. Una sesión que terminó en crash es la que más importa.
   @visibleForTesting
-  static Future<void> recover(Directory dir, Uri endpoint, File current) =>
-      _recover(dir, endpoint, current);
+  static Future<void> recover(
+    Directory dir,
+    Uri endpoint,
+    File current, {
+    String? apiKey,
+  }) =>
+      _recover(dir, endpoint, apiKey, current);
 
   static Future<void> _recover(
     Directory dir,
     Uri endpoint,
+    String? apiKey,
     File current,
   ) async {
     try {
@@ -289,9 +300,18 @@ class ThorReplay {
             }
           }
           final rest = records.skip(skip).toList();
-          if (rest.isNotEmpty &&
-              await _upload(http, endpoint, sessionId, rest, blocks) == null) {
-            continue; // Sin red: se intenta en el siguiente arranque.
+          if (rest.isNotEmpty) {
+            final up = await _upload(
+              http,
+              endpoint,
+              apiKey,
+              sessionId,
+              rest,
+              blocks,
+            );
+            // Sin red o servidor ocupado: se intenta en el siguiente
+            // arranque. Rechazada (llave, tamaño): reintentar no sirve.
+            if (up.sent is _Later) continue;
           }
         }
         for (final f in [entity, on, sent]) {
@@ -306,29 +326,39 @@ class ThorReplay {
 
   /// Sube [records] y luego los bloques que el servidor pida. Devuelve los
   /// bytes enviados, o `null` si los registros no llegaron.
-  static Future<int?> _upload(
+  static Future<({_Sent sent, List<String> unsentBlocks})> _upload(
     HttpClient http,
     Uri endpoint,
+    String? apiKey,
     String sessionId,
     List<String> records,
     Map<String, String> blocks,
   ) async {
-    final first = await _post(http, endpoint, sessionId, records);
-    if (first == null) return null;
-    final (sentBytes, missing) = first;
+    final first = await _post(http, endpoint, apiKey, sessionId, records);
+    const none = <String>[];
+    if (first.sent is! _Ok) return (sent: first.sent, unsentBlocks: none);
     final lines = [
-      for (final h in missing)
+      for (final h in first.missing)
         if (blocks[h] case final line?) line,
     ];
-    if (lines.isEmpty) return sentBytes;
-    final second = await _post(http, endpoint, sessionId, lines);
-    return sentBytes + (second?.$1 ?? 0);
+    if (lines.isEmpty) return (sent: first.sent, unsentBlocks: none);
+    final second = await _post(http, endpoint, apiKey, sessionId, lines);
+    final bytes = (first.sent as _Ok).bytes;
+    return switch (second.sent) {
+      _Ok(bytes: final more) => (
+          sent: _Ok(bytes + more),
+          unsentBlocks: const <String>[]
+        ),
+      // Los registros ya llegaron: los bloques que faltan viajan después.
+      _ => (sent: _Ok(bytes), unsentBlocks: lines),
+    };
   }
 
-  /// Un POST gzip NDJSON: (bytes enviados, bloques que faltan) o `null`.
-  static Future<(int, List<String>)?> _post(
+  /// Un POST gzip NDJSON: qué pasó y qué bloques pide el servidor.
+  static Future<({_Sent sent, List<String> missing})> _post(
     HttpClient http,
     Uri endpoint,
+    String? apiKey,
     String sessionId,
     List<String> lines,
   ) async {
@@ -339,19 +369,33 @@ class ThorReplay {
         ..set('content-type', 'application/x-ndjson')
         ..set('content-encoding', 'gzip')
         ..set('x-thor-session', sessionId);
+      if (apiKey != null) req.headers.set('x-thor-key', apiKey);
       req.add(body);
       final res = await req.close();
       final text = await res.transform(utf8.decoder).join();
-      if (res.statusCode >= 300) return null;
+      final code = res.statusCode;
+      if (code == 429) {
+        final after = int.tryParse(res.headers.value('retry-after') ?? '');
+        return (
+          sent: _Later(after == null ? null : Duration(seconds: after)),
+          missing: const <String>[],
+        );
+      }
+      // Llave inválida, sesión de otra app o lote demasiado grande:
+      // reintentar igual no cambia nada.
+      if (code == 401 || code == 403 || code == 413) {
+        return (sent: _Rejected(code), missing: const <String>[]);
+      }
+      if (code >= 300) return (sent: _Later(null), missing: const <String>[]);
       final json = jsonDecode(text);
       return (
-        body.length,
-        json is Map && json['missing'] is List
+        sent: _Ok(body.length),
+        missing: json is Map && json['missing'] is List
             ? (json['missing'] as List).cast<String>()
             : const <String>[],
       );
     } on Object {
-      return null;
+      return (sent: _Later(null), missing: const <String>[]);
     }
   }
 
@@ -364,6 +408,17 @@ class ThorReplay {
   }
 
   int _sentRecords = 0;
+  int? _retryAt;
+
+  /// Quita la marca `.on`: una sesión rechazada no se reintenta al
+  /// siguiente arranque.
+  void _unmarkEnabled() {
+    final file = _file;
+    if (file == null) return;
+    final base = file.path.substring(0, file.path.length - '.jsonl'.length);
+    final on = File('$base.on');
+    if (on.existsSync()) unawaited(on.delete().catchError((_) => on));
+  }
 
   void _saveSent() {
     final file = _file;
@@ -727,23 +782,42 @@ class ThorReplay {
     if (!upload || !_uploadEnabled || _pendingUpload.isEmpty || _uploading) {
       return;
     }
+    // 429: el servidor pidió esperar.
+    if (_retryAt case final at? when _ts < at) return;
     _uploading = true;
     _lastUploadAt = _ts;
     try {
       final endpoint = _config.endpoint!;
       final records = List<String>.of(_pendingUpload);
-      final sent = await _upload(
+      final up = await _upload(
         _http ??= HttpClient(),
         endpoint,
+        _config.apiKey,
         _core.session.sessionId,
         records,
         _blocks,
       );
-      if (sent == null) return;
-      uploadedBytes += sent;
-      _pendingUpload.removeRange(0, records.length);
-      _sentRecords += records.length;
-      _saveSent();
+      switch (up.sent) {
+        case _Ok(:final bytes):
+          uploadedBytes += bytes;
+          _pendingUpload
+            ..removeRange(0, records.length)
+            ..insertAll(0, up.unsentBlocks);
+          _sentRecords += records.length;
+          _saveSent();
+        case _Later(:final after):
+          if (after != null) _retryAt = _ts + after.inMilliseconds;
+        case _Rejected(:final status):
+          if (status == 413) {
+            // Solo este lote: el resto de la sesión puede caber.
+            _pendingUpload.removeRange(0, records.length);
+          } else {
+            // Llave o sesión rechazadas: esta sesión ya no sube.
+            _uploadEnabled = false;
+            _pendingUpload.clear();
+            _unmarkEnabled();
+          }
+      }
     } finally {
       _uploading = false;
     }
@@ -809,4 +883,25 @@ class _ReplayLifecycle with WidgetsBindingObserver {
       unawaited(replay.flush());
     }
   }
+}
+
+/// Resultado de una subida.
+sealed class _Sent {}
+
+/// Llegó: [bytes] gzip enviados.
+final class _Ok extends _Sent {
+  _Ok(this.bytes);
+  final int bytes;
+}
+
+/// Sin red, error del servidor o 429: se reintenta (tras [after] si vino).
+final class _Later extends _Sent {
+  _Later(this.after);
+  final Duration? after;
+}
+
+/// 401/403/413: reintentar igual no sirve.
+final class _Rejected extends _Sent {
+  _Rejected(this.status);
+  final int status;
 }
