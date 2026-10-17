@@ -132,10 +132,16 @@ class RedactionPolicy {
   /// (`userPassword`, `authToken`, `numeroTarjeta`).
   static bool isSecretKey(String key) {
     final k = _normalize(key);
+    if (_notSecret.contains(k)) return false;
     return _hardDenied.contains(k) ||
         _secretExact.contains(k) ||
         _secretFragment.hasMatch(k);
   }
+
+  // Claves que contienen `token` pero NO guardan un secreto: `token_type`
+  // es la palabra "Bearer" de OAuth y taparla solo quita contexto al
+  // depurar el login (visto en PingOne).
+  static const _notSecret = {'token_type'};
 
   // Claves cortas que solo son secreto COMPLETAS: como fragmento romperían
   // claves normales (`shipping_pin`, `spinner`, `photo`).
@@ -160,7 +166,10 @@ class RedactionPolicy {
   // (JSESSIONID, PHPSESSID) ES la credencial, igual que la cookie.
   static final _secretFragment = RegExp(
     'password|contrase|passcode|secret|token|authorization|cookie|'
-    'api_?key|access_?key|subscription_?key|signature|session_?id|'
+    // `app_?key`: VTEX manda `X-VTEX-API-AppKey` (par de AppToken) y no
+    // casaba con `api_?key` por el `app` de en medio (fuga vista en La
+    // Comer, prueba e2e).
+    'api_?key|app_?key|access_?key|subscription_?key|signature|session_?id|'
     'cvv|cvc|security_?code|card_?number|credit_?card|cc_?num|tarjeta|'
     'private_?key|jwt|bearer|credential|otp_?code',
   );

@@ -21,6 +21,8 @@ void main() {
           'set-cookie': 'sid=2',
           'X-Api-Key': 'k',
           'x-auth-token': 't',
+          'X-VTEX-API-AppKey': 'vtexappkey-x',
+          'X-VTEX-API-AppToken': 'vt',
           'x-request-id': 'req-42',
           'x-user-email': 'ana@mail.com',
           'content-type': 'application/json',
@@ -32,6 +34,8 @@ void main() {
           'set-cookie': m,
           'X-Api-Key': m,
           'x-auth-token': m,
+          'X-VTEX-API-AppKey': m,
+          'X-VTEX-API-AppToken': m,
           'x-request-id': 'req-42',
           'x-user-email': 'ana@mail.com',
           'content-type': 'application/json',
@@ -54,6 +58,7 @@ void main() {
           'id_token': 'i1',
           'jwt': 'j1',
           'expires_in': 3600,
+          'token_type': 'Bearer',
         },
         'pago': [
           {'cardNumber': '4111111111111111', 'cvv': '123', 'pin': '0000'},
@@ -74,6 +79,7 @@ void main() {
           'id_token': m,
           'jwt': m,
           'expires_in': 3600,
+          'token_type': 'Bearer',
         },
         'pago': [
           {'cardNumber': m, 'cvv': m, 'pin': m},
