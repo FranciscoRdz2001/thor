@@ -140,7 +140,10 @@ class RedactionPolicy {
   /// regex sobre el texto entero y no palabra por palabra. Lo demás
   /// (nombres propios incluidos) pasa igual: esto es un filtro de forma,
   /// no un detector de PII — para eso está el enmascarado.
-  static String scrubText(String text) => text
+  ///
+  /// Antes pasa por [scrubSecrets]: un label o un log con `token=…` o
+  /// `Bearer …` pierde el secreto entero, no solo lo que tenga forma.
+  static String scrubText(String text) => scrubSecrets(text)
       .replaceAll(_emailIn, ':email')
       .replaceAllMapped(
         _numberIn,
@@ -149,6 +152,47 @@ class RedactionPolicy {
       .replaceAllMapped(
         _longWord,
         (m) => personalMarker(m[0]!) ?? m[0]!,
+      );
+
+  // `clave=valor`, `clave: valor`, `"clave": "valor"` (JSON, query,
+  // headers, toString de mapas). El valor puede traer esquema de auth
+  // (`Authorization: Bearer x`): se conserva el esquema, cae el token.
+  // La clave candidata ya debe traer un fragmento de secreto: con una
+  // clave cualquiera, `https://h/p?token=x` se comería como UN par
+  // (`https` : `//h/p?token=x`) y el token pasaría.
+  static final _secretPair = RegExp(
+    r'''(["']?)\b((?:[\w\-]*?(?:password|contrase|secret|token|'''
+    r'''authorization|cookie|api[_\-]?key|cvv|cvc|card[_\-]?number|tarjeta|'''
+    r'''private[_\-]?key)[\wñÑ\-]*)|pin)\1(\s*[:=]\s*)'''
+    r'''(?:(Bearer|Basic|Token)\s+)?'''
+    r'''("(?:[^"\\]|\\.)*"|'[^']*'|[^\s,;&)}\]"']+)''',
+    caseSensitive: false,
+  );
+  static final _bearer =
+      RegExp(r'\b(Bearer)\s+[A-Za-z0-9\-._~+/]{8,}=*', caseSensitive: false);
+  static final _basic = RegExp(r'\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})');
+  static final _base64Hint = RegExp('[0-9+/=]');
+
+  /// [text] sin secretos evidentes: el valor de toda clave de secreto
+  /// ([isSecretKey]: `password=…`, `"token":"…"`, `api_key: …`) y los
+  /// tokens de `Bearer …` / `Basic …` sueltos se vuelven
+  /// [redactedMarker]. Para texto libre (logs, labels) donde no hay mapa
+  /// que pasar por la allowlist.
+  static String scrubSecrets(String text) => text
+      .replaceAllMapped(_secretPair, (m) {
+        final key = m[2]!;
+        if (!isSecretKey(key)) return m[0]!;
+        final value = m[5]!;
+        final quote =
+            value.startsWith('"') || value.startsWith("'") ? value[0] : '';
+        final scheme = m[4] == null ? '' : '${m[4]} ';
+        return '${m[1]}$key${m[1]}${m[3]}$scheme$quote$redactedMarker$quote';
+      })
+      .replaceAllMapped(_bearer, (m) => '${m[1]} $redactedMarker')
+      // "Basic" es palabra común: solo si lo que sigue parece base64.
+      .replaceAllMapped(
+        _basic,
+        (m) => _base64Hint.hasMatch(m[1]!) ? 'Basic $redactedMarker' : m[0]!,
       );
 
   /// ¿El valor de esta clave puede pasar en claro?

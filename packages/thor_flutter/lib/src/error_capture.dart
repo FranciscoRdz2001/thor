@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:thor/thor.dart' hide originFromStack;
 import 'package:thor/thor.dart' as thor_core show originFromStack;
+import 'package:thor_flutter/src/log_capture.dart';
 import 'package:thor_flutter/src/screenshot_capture.dart';
 
 /// Instala la captura de errores componiendo con los handlers existentes.
@@ -22,7 +23,9 @@ class ErrorCapture {
     final previousFlutterHandler = FlutterError.onError;
     FlutterError.onError = (details) {
       _recordFlutterError(details);
-      previousFlutterHandler?.call(details);
+      // El volcado a consola (presentError → debugPrint) ya está grabado
+      // como este error: no se duplica como cientos de líneas de log.
+      LogCapture.silenced(() => previousFlutterHandler?.call(details));
     };
 
     final previousPlatformHandler = PlatformDispatcher.instance.onError;

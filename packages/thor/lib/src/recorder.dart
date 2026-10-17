@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:clock/clock.dart';
 
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/model/log_level.dart';
 import 'package:thor/src/store/capture_policy.dart';
 import 'package:thor/src/store/event_store.dart';
 import 'package:thor/src/util/failure_name.dart';
@@ -25,11 +26,18 @@ class ThorRecorder {
   ThorRecorder({
     required this.store,
     ThorCapturePolicy policy = const ThorCapturePolicy(),
-  }) : _stateBursts = policy.stateBurstLimit <= 0
+  })  : _stateBursts = policy.stateBurstLimit <= 0
             ? null
             : BurstLimiter(
                 limit: policy.stateBurstLimit,
                 window: policy.stateBurstWindow,
+                summaryEvery: policy.burstSummaryEvery,
+              ),
+        _logBursts = policy.logBurstLimit <= 0
+            ? null
+            : BurstLimiter(
+                limit: policy.logBurstLimit,
+                window: policy.logBurstWindow,
                 summaryEvery: policy.burstSummaryEvery,
               );
 
@@ -46,6 +54,13 @@ class ThorRecorder {
   /// pasó: el resumen sale después (quizá en otra pantalla) y sin esto la
   /// línea de tiempo callaría el estado FINAL del bloc.
   final Map<String, ({Object? to, ScreenId? screen})> _lastDropped = {};
+
+  /// Tope de ráfagas de log por origen+cupo; `null` = sin tope.
+  final BurstLimiter? _logBursts;
+
+  /// Nivel más alto descartado de cada ráfaga de log abierta: el resumen
+  /// declara si lo recortado incluía warnings.
+  final Map<String, ThorLogLevel> _logDroppedLevel = {};
 
   /// Pantalla activa. La mantienen los adaptadores de navegación
   /// (o `Thor.setScreen` para navegación que el Navigator no ve).
@@ -88,6 +103,27 @@ class ThorRecorder {
         final key = '${payload['bloc']}|${payload['action']}';
         if (!bursts.allow(key, now)) {
           _lastDropped[key] = (to: payload['to'], screen: currentScreen);
+          return null;
+        }
+      }
+    }
+    final logs = _logBursts;
+    if (logs != null) {
+      if (logs.hasPending) _emitLogSummaries(logs.due(now), now);
+      // Solo las líneas de log (con `level`); las marcas de `Thor.mark`
+      // las pone la app a mano y nunca se recortan.
+      final level = kind == ThorEventKind.log
+          ? ThorLogLevel.tryParse(payload['level'])
+          : null;
+      if (level != null && payload['burst'] != true) {
+        // Cupo aparte para warn/error: mil `print` de debug no deben
+        // tapar el único warning que explica el bug.
+        final key = '${payload['source']}|${level.isHigh ? 'high' : 'low'}';
+        if (!logs.allow(key, now)) {
+          final prev = _logDroppedLevel[key];
+          if (prev == null || level.index > prev.index) {
+            _logDroppedLevel[key] = level;
+          }
           return null;
         }
       }
@@ -153,14 +189,46 @@ class ThorRecorder {
     }
   }
 
+  /// Resumen de líneas de log recortadas: un evento de log más (con
+  /// `burst: true`) para que el journal, el narrador y el replay lo traten
+  /// como cualquier línea de su nivel.
+  void _emitLogSummaries(List<BurstSummary> summaries, DateTime now) {
+    final limiter = _logBursts!;
+    for (final s in summaries) {
+      final source = s.key.substring(0, s.key.lastIndexOf('|'));
+      final level = _logDroppedLevel.remove(s.key) ?? ThorLogLevel.debug;
+      _emit(
+        ThorEventKind.log,
+        {
+          'level': level.name,
+          'source': source,
+          'message': '${s.dropped} líneas de $source recortadas '
+              '(más de ${limiter.limit} en '
+              '${limiter.window.inMilliseconds}ms)',
+          'burst': true,
+          'dropped': s.dropped,
+          'limit': limiter.limit,
+          'windowMs': limiter.window.inMilliseconds,
+          'spanMs': s.lastDropAt.difference(s.firstDropAt).inMilliseconds,
+        },
+        now,
+      );
+    }
+  }
+
   /// Emite ya los resúmenes de ráfagas pendientes (aunque la ráfaga siga
   /// abierta). Se llama antes de un reporte y al cerrar la sesión: un
   /// conteo de descartes que nunca se escribe es un hallazgo perdido.
   void flushBursts() {
-    final bursts = _stateBursts;
-    if (bursts == null || !bursts.hasPending) return;
     final now = clock.now();
-    _emitBurstSummaries(bursts.due(now, all: true), now);
+    final bursts = _stateBursts;
+    if (bursts != null && bursts.hasPending) {
+      _emitBurstSummaries(bursts.due(now, all: true), now);
+    }
+    final logs = _logBursts;
+    if (logs != null && logs.hasPending) {
+      _emitLogSummaries(logs.due(now, all: true), now);
+    }
   }
 
   /// Suscribe un [listener] a todo evento grabado. Devuelve la función que

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/model/log_level.dart';
 import 'package:thor/src/util/failure_name.dart';
 
 /// Narrador: convierte la línea de tiempo en pasos de reproducción en
@@ -132,7 +133,25 @@ class ThorNarrator {
           }
         case ThorEventKind.log:
           final label = event.payload['label'];
-          if (label != null) nested(event, '· marca: $label');
+          if (label != null) {
+            nested(event, '· marca: $label');
+            break;
+          }
+          // Líneas de consola: las de debug son charla de desarrollo y
+          // ahogarían los pasos; info/warn/error sí cuentan la historia.
+          final level = ThorLogLevel.tryParse(event.payload['level']);
+          if (level == null || level == ThorLogLevel.debug) break;
+          final icon = switch (level) {
+            ThorLogLevel.error => '✗',
+            ThorLogLevel.warn => '⚠',
+            _ => '·',
+          };
+          final message = '${event.payload['message'] ?? ''}';
+          final short =
+              message.length <= 160 ? message : '${message.substring(0, 160)}…';
+          nested(event, '$icon log ${event.payload['source']}: $short');
+          final error = event.payload['error'];
+          if (error != null) detail('error: $error');
         case ThorEventKind.performance:
           final slow = event.payload['slowFrames'];
           final worst = event.payload['worstMs'];

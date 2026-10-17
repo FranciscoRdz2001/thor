@@ -11,6 +11,7 @@ export 'package:thor/thor.dart';
 
 export 'src/error_capture.dart' show ErrorCapture;
 export 'src/interaction_capture.dart' show InteractionCapture;
+export 'src/log_capture.dart' show LogCapture;
 export 'src/navigator_observer.dart';
 export 'src/overlay/crash_prompt.dart'
     show ThorCrashPrompt, ThorCrashReportPage;

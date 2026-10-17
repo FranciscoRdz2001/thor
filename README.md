@@ -49,6 +49,15 @@ patrones que un humano tardaría en ver:
   esa persona (email, nombre, tienda…): se guarda en claro porque la app
   lo manda a propósito, salvo claves de secreto (contraseña, token,
   tarjeta, CVV), y con tope de ~4 KB.
+- **Logs de consola**: `print` y `debugPrint` se graban solos (la consola
+  los sigue mostrando igual) con nivel deducido del texto, limpios de
+  emails, números largos, tokens y secretos (`Bearer …`, `password=…`),
+  recortados a 500 caracteres y con tope de ráfagas por segundo (lo
+  descartado se cuenta). `dart:developer` `log()` no se puede interceptar:
+  cambia `import 'dart:developer';` por
+  `import 'package:thor_flutter/log.dart';` (misma firma) o usa `Thor.log`.
+  El narrador omite los de debug; el replay lleva solo warn/error.
+  `Thor.run(captureLogs: false)` lo apaga.
 - **Test de reproducción**: `ThorReproTestBuilder.build(timeline)` emite el
   esqueleto del `integration_test` con los pasos exactos. Los valores de los
   campos y la aserción van marcados `TODO` — Thor sabe qué pasó, no qué

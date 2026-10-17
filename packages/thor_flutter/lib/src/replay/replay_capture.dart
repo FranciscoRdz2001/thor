@@ -124,6 +124,9 @@ class ThorReplayStats {
 /// - `{"t":"ev",…}` — evento de Thor en versión ligera. En un tap, `p.l`
 ///   es el label (string) o, enmascarado, la lista de largos de palabra
 ///   como el texto en pantalla; `p.k` la Key, solo si el label es legible.
+///   Un log (`k: "log"`) es `p.l` (marca de `Thor.mark`) o
+///   `{lv, src, m, n?, err?, x?}` (línea de consola ya limpia; `x` = líneas
+///   recortadas por ráfaga). Solo warn/error, salvo en modo diagnóstico.
 ///
 /// Subida en dos fases: se mandan los registros sin bloques; el servidor
 /// contesta `{"missing": [...]}` y solo esos bloques se mandan después.
@@ -142,6 +145,18 @@ class ThorReplay {
 
   /// Si esta sesión sube (muestra o ya hubo un error).
   bool _uploadEnabled;
+
+  /// Modo diagnóstico: el replay lleva TODOS los logs (debug/info
+  /// incluidos), no solo warn/error. Hook para que el servidor lo encienda
+  /// por sesión/usuario cuando hay que perseguir un bug; por ahora solo se
+  /// fija desde aquí o en tests ([diagnostic]).
+  bool _diagnostic = false;
+
+  /// Enciende/apaga el modo diagnóstico (ver [_diagnostic]).
+  @visibleForTesting
+  bool get diagnostic => _diagnostic;
+  @visibleForTesting
+  set diagnostic(bool value) => _diagnostic = value;
 
   final Stopwatch _clock = Stopwatch();
   final List<String> _pendingDisk = [];
@@ -701,7 +716,7 @@ class ThorReplay {
         },
       ThorEventKind.network => _slimNetwork(p, event.origin),
       ThorEventKind.state => _slimState(p),
-      ThorEventKind.log => {'l': p['label']},
+      ThorEventKind.log => _slimLog(p),
       _ => null,
     };
     if (slim == null) return;
@@ -753,6 +768,24 @@ class ThorReplay {
               : WireframeBuilder.mask(label),
       'w': p['widget'],
       if (key != null && readable) 'k': RedactionPolicy.scrubText(key),
+    };
+  }
+
+  /// Log: las marcas siempre; las líneas de consola solo warn/error (las
+  /// de debug/info son volumen sin valor para quien mira el replay), todas
+  /// en [_diagnostic]. El mensaje ya viene limpio de `ThorCore.log`.
+  Map<String, Object?>? _slimLog(Map<String, Object?> p) {
+    if (p['label'] != null) return {'l': p['label']};
+    final level = ThorLogLevel.tryParse(p['level']);
+    if (level == null) return null;
+    if (!level.isHigh && !_diagnostic) return null;
+    return {
+      'lv': level.name,
+      'src': p['source'],
+      'm': p['message'],
+      if (p['name'] != null) 'n': p['name'],
+      if (p['error'] != null) 'err': p['error'],
+      if (p['burst'] == true) 'x': p['dropped'],
     };
   }
 

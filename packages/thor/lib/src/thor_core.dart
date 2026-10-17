@@ -6,6 +6,7 @@ import 'package:clock/clock.dart';
 import 'package:meta/meta.dart';
 
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/model/log_level.dart';
 import 'package:thor/src/model/session.dart';
 import 'package:thor/src/network/raw_network_store.dart';
 import 'package:thor/src/persistence/journal.dart';
@@ -13,6 +14,7 @@ import 'package:thor/src/recorder.dart';
 import 'package:thor/src/redaction/redaction_policy.dart';
 import 'package:thor/src/store/capture_policy.dart';
 import 'package:thor/src/store/event_store.dart';
+import 'package:thor/src/util/origin.dart';
 
 /// Proveedor de contexto de dominio: se llama al generar un reporte para
 /// fotografiar estado de negocio (cola de sync, turno abierto…).
@@ -29,6 +31,7 @@ class ThorCore {
     required this.store,
     required this.session,
     required this.redaction,
+    this.capture = const ThorCapturePolicy(),
     this.journal,
   });
 
@@ -49,6 +52,9 @@ class ThorCore {
 
   /// Política de redacción vigente.
   final RedactionPolicy redaction;
+
+  /// Límites de captura vigentes (ráfagas, largo de logs…).
+  final ThorCapturePolicy capture;
 
   /// Journal en disco; `null` si se inicializó sin persistencia (tests,
   /// plataformas sin FS).
@@ -113,6 +119,7 @@ class ThorCore {
       store: store,
       session: session,
       redaction: redaction,
+      capture: capture,
       journal: journal,
     )..recoveredPrevious = recovered;
 
@@ -120,13 +127,78 @@ class ThorCore {
       // Los errores van a disco de inmediato: si la app está por morir,
       // la causa ya tiene que estar escrita.
       core._unsubscribeJournal = recorder.addListener(
-        (event) =>
-            journal!.append(event, urgent: event.kind == ThorEventKind.error),
+        (event) => journal!.append(event, urgent: _isUrgent(event)),
       );
     }
 
     return _instance = core;
   }
+
+  /// Un log de nivel error es tan evidencia como un error capturado: si la
+  /// app muere después, tiene que estar en disco.
+  static bool _isUrgent(ThorEvent event) =>
+      event.kind == ThorEventKind.error ||
+      (event.kind == ThorEventKind.log &&
+          event.payload['level'] == ThorLogLevel.error.name);
+
+  /// Tope del stack de un log de error: alcanza para ubicar el fallo sin
+  /// que un log en bucle infle el journal.
+  static const _maxLogStackChars = 2000;
+
+  /// Graba una línea de log (`ThorEventKind.log` con `level`, `source` y
+  /// `message`).
+  ///
+  /// Es lo que hay debajo de la captura de `print`/`debugPrint` y de
+  /// `Thor.log`. PRIVACIDAD: el mensaje (y [name] y [error]) pasan por
+  /// [RedactionPolicy.scrubText] —emails, números largos, tokens, `Bearer
+  /// …`, `password=…`— y se truncan a [ThorCapturePolicy.maxLogLength]
+  /// ANTES de grabarse: lo que la app imprime no es dato que mande a
+  /// propósito. Las ráfagas se recortan en el grabador (ver
+  /// [ThorCapturePolicy.logBurstLimit]).
+  ///
+  /// [source]: `thor` (API explícita), `print` o `debugPrint`.
+  void log(
+    String message, {
+    ThorLogLevel level = ThorLogLevel.info,
+    String source = 'thor',
+    String? name,
+    Object? error,
+    StackTrace? stackTrace,
+  }) {
+    final max = capture.maxLogLength;
+    recorder.record(
+      ThorEventKind.log,
+      {
+        'level': level.name,
+        'source': source,
+        'message': cleanLogText(message, max),
+        if (name != null && name.isNotEmpty) 'name': cleanLogText(name, 80),
+        if (error != null) ...{
+          'error': cleanLogText('$error', max),
+          'errorType': error.runtimeType.toString(),
+        },
+        if (stackTrace != null && level == ThorLogLevel.error)
+          'stack': _clip('$stackTrace', _maxLogStackChars),
+      },
+      origin: stackTrace == null ? null : originFromStack(stackTrace),
+    );
+  }
+
+  /// [text] sin datos personales ni secretos y recortado a [max].
+  ///
+  /// Se recorta ANTES de limpiar (a 4×[max]) porque la limpieza es regex
+  /// sobre el texto entero y un `print(json)` puede pesar un megabyte; el
+  /// margen evita cortar un email a la mitad justo en el borde.
+  static String cleanLogText(String text, int max) {
+    final head = text.length > max * 4 ? text.substring(0, max * 4) : text;
+    final clean = RedactionPolicy.scrubText(head);
+    if (clean.length <= max && head.length == text.length) return clean;
+    final cut = clean.length <= max ? clean : clean.substring(0, max);
+    return '$cut…(+${text.length - cut.length})';
+  }
+
+  static String _clip(String s, int max) =>
+      s.length <= max ? s : '${s.substring(0, max)}…(+${s.length - max})';
 
   /// Marca libre en la línea de tiempo (`Thor.mark('cobro_iniciado')`).
   void mark(String label, [Map<String, Object?> data = const {}]) {

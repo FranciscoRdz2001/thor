@@ -21,17 +21,28 @@ class ThorCapturePolicy {
   ///   duración, bytes); las fallidas conservan todo el detalle. En memoria
   ///   (inspector, cURL, reporte manual) el detalle completo se conserva
   ///   siempre.
+  /// - [logBurstLimit]: máximo de líneas de log (`print`, `debugPrint`,
+  ///   `Thor.log`) por origen dentro de [logBurstWindow]. Un `print` en un
+  ///   `build` o en un stream de scroll escribe cientos por segundo; el
+  ///   excedente se descarta y se CUENTA en un resumen. Las de nivel
+  ///   warn/error llevan su propio cupo: el ruido de debug no las ahoga.
+  ///   `0` desactiva el tope.
+  /// - [maxLogLength]: largo máximo del mensaje de un log (ya limpio de
+  ///   datos personales); lo demás se trunca con `…(+N)`.
   const ThorCapturePolicy({
     this.stateBurstLimit = 3,
     this.stateBurstWindow = const Duration(seconds: 1),
     this.burstSummaryEvery = const Duration(seconds: 10),
     this.fullNetworkInJournal = false,
+    this.logBurstLimit = 20,
+    this.logBurstWindow = const Duration(seconds: 1),
+    this.maxLogLength = 500,
   });
 
   /// Sin topes ni aligerado: todo como antes (depurar el propio Thor,
   /// tests que cuentan eventos exactos).
   const ThorCapturePolicy.unlimited()
-      : this(stateBurstLimit: 0, fullNetworkInJournal: true);
+      : this(stateBurstLimit: 0, fullNetworkInJournal: true, logBurstLimit: 0);
 
   /// Máximo de eventos de estado por bloc+acción por ventana (`0` = sin
   /// tope).
@@ -45,6 +56,16 @@ class ThorCapturePolicy {
 
   /// Si las peticiones exitosas van completas al journal.
   final bool fullNetworkInJournal;
+
+  /// Máximo de líneas de log por origen y nivel por ventana (`0` = sin
+  /// tope).
+  final int logBurstLimit;
+
+  /// Ventana del tope de ráfagas de log.
+  final Duration logBurstWindow;
+
+  /// Largo máximo del mensaje de un log.
+  final int maxLogLength;
 }
 
 /// Resumen de una ráfaga recortada por [BurstLimiter].

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:ui';
 
@@ -8,6 +9,7 @@ import 'package:stack_trace/stack_trace.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/error_capture.dart';
 import 'package:thor_flutter/src/interaction_capture.dart';
+import 'package:thor_flutter/src/log_capture.dart';
 import 'package:thor_flutter/src/navigator_observer.dart';
 import 'package:thor_flutter/src/performance_capture.dart';
 import 'package:thor_flutter/src/screen_capture.dart';
@@ -67,6 +69,11 @@ class Thor {
   /// - [infraPackages]: paquetes propios que son infraestructura (tu SDK
   ///   de red, por ejemplo) y deben saltarse al resolver el
   ///   `archivo:línea` de origen.
+  /// - [captureLogs]: graba `print` y `debugPrint` como logs (limpios de
+  ///   datos personales, recortados y con tope de ráfagas — ver
+  ///   [ThorCapturePolicy.logBurstLimit]). La consola los sigue mostrando
+  ///   igual. `dart:developer` `log()` no se puede interceptar: ver
+  ///   [log].
   static Future<void> run(
     FutureOr<void> Function() body, {
     bool enabled = kDebugMode,
@@ -78,6 +85,7 @@ class Thor {
     Map<String, String> appInfo = const {},
     Set<String> infraPackages = const {},
     ThorCapturePolicy capture = const ThorCapturePolicy(),
+    bool captureLogs = true,
   }) async {
     if (!enabled) {
       await body();
@@ -125,6 +133,8 @@ class Thor {
         // Thor queda al frente y DELEGA al de la app; los errores del
         // propio arranque los cubre la zona de todos modos.
         ErrorCapture.install();
+        // Mismo motivo: la app puede asignar su propio debugPrint.
+        if (captureLogs) LogCapture.install();
         InteractionCapture.install();
         // Los punteros no ven al lector de pantalla ni a los arneses de QA
         // que manejan la app por el árbol semántico.
@@ -150,6 +160,8 @@ class Thor {
         // handlers de la app (Crashlytics vía PlatformDispatcher) ya
         // corrieron por su propio canal.
       },
+      // `print` de la app (y de sus paquetes) a la línea de tiempo.
+      zoneSpecification: captureLogs ? LogCapture.zoneSpecification : null,
     );
   }
 
@@ -200,6 +212,44 @@ class Thor {
   /// Marca libre en la línea de tiempo.
   static void mark(String label, [Map<String, Object?> data = const {}]) =>
       ThorCore.instance?.mark(label, data);
+
+  /// Graba una línea de log y la manda también a `dart:developer` `log()`
+  /// (DevTools), así que sirve de reemplazo directo de este.
+  ///
+  /// `developer.log` no se puede interceptar (va directo a la VM). Para no
+  /// tocar cada llamada, `package:thor_flutter/log.dart` trae un `log()`
+  /// con su misma firma: migrar es cambiar el import
+  /// (`import 'dart:developer';` → `import 'package:thor_flutter/log.dart';`).
+  ///
+  /// El mensaje, [name] y [error] se limpian de emails, números largos,
+  /// tokens y secretos antes de grabarse, y se recortan.
+  static void log(
+    String message, {
+    ThorLogLevel level = ThorLogLevel.info,
+    String name = '',
+    Object? error,
+    StackTrace? stackTrace,
+  }) {
+    developer.log(
+      message,
+      name: name,
+      level: switch (level) {
+        ThorLogLevel.debug => 500,
+        ThorLogLevel.info => 800,
+        ThorLogLevel.warn => 900,
+        ThorLogLevel.error => 1000,
+      },
+      error: error,
+      stackTrace: stackTrace,
+    );
+    ThorCore.instance?.log(
+      message,
+      level: level,
+      name: name,
+      error: error,
+      stackTrace: stackTrace,
+    );
+  }
 
   /// Pantalla manual para navegación que el Navigator no ve.
   static void setScreen(String name) => ThorCore.instance?.setScreen(name);
