@@ -18,7 +18,8 @@ export 'src/overlay/inspector_page.dart' show ThorInspectorPage;
 export 'src/overlay/report_share.dart' show ThorReportSharer, ThorShareOutcome;
 export 'src/overlay/thor_overlay.dart' show ThorOverlayManager;
 export 'src/performance_capture.dart' show PerformanceCapture;
-export 'src/replay/replay_capture.dart' show ThorReplay, ThorReplayConfig;
+export 'src/replay/replay_capture.dart'
+    show ThorReplay, ThorReplayConfig, ThorReplayStats;
 export 'src/replay/wireframe.dart' show ThorReplayIgnore;
 export 'src/screen_capture.dart' show ScreenCapture;
 export 'src/screenshot_capture.dart'

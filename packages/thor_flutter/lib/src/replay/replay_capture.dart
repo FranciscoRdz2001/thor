@@ -22,6 +22,7 @@ class ThorReplayConfig {
     this.saveEvery = const Duration(seconds: 5),
     this.idle = const Duration(milliseconds: 250),
     this.maxGap = const Duration(milliseconds: 1200),
+    this.snapshotBudget = const Duration(milliseconds: 8),
   });
 
   /// Enmascara todo el texto (default). Apagar solo en entornos propios.
@@ -58,6 +59,29 @@ class ThorReplayConfig {
   /// Con animación continua (shimmer, carrusel) igual se captura cada
   /// [maxGap]; el hash evita mandar lo repetido.
   final Duration maxGap;
+
+  /// Tiempo máximo razonable de un snapshot (recorrido + bloques + hash)
+  /// en el hilo de UI. Si se pasa varias veces seguidas, el replay espacia
+  /// los snapshots ([idle] y [maxGap] ×2, hasta ×8) en vez de cobrarle
+  /// frames a la app. Medido en debug (pesimista) con ~9000 elementos
+  /// montados: ~0.4 ms el recorrido, ~0.2 ms bloques + hash.
+  final Duration snapshotBudget;
+}
+
+/// Costo del replay en el dispositivo, para depurar y para el servidor
+/// (viaja como `{"t":"stats",…}` al subir o irse a segundo plano).
+class ThorReplayStats {
+  ThorReplayStats._(this._json);
+
+  final Map<String, Object?> _json;
+
+  /// `{"snap":{"n","p50","p95","max"},"ops":{"avg","max"},`
+  /// `"blk":{"avg","max"},"bo":{"n","x"}}` — ms con un decimal; `bo` =
+  /// veces que se espació por exceder el presupuesto y factor actual.
+  Map<String, Object?> toJson() => _json;
+
+  @override
+  String toString() => jsonEncode(_json);
 }
 
 /// Replay de sesión tipo "reconstrucción": en vez de video se graba lo
@@ -121,6 +145,81 @@ class ThorReplay {
 
   /// Bytes gzip enviados al servidor en esta sesión.
   int uploadedBytes = 0;
+
+  // ── Costo en el dispositivo ──
+  //
+  // El snapshot corre en el hilo de UI: nunca se había medido. Se guardan
+  // las últimas 256 duraciones (p50/p95 de lo reciente, memoria fija) y
+  // contadores de toda la sesión.
+  final Stopwatch _snapWatch = Stopwatch();
+  final List<int> _snapUs = [];
+  int _snapN = 0;
+  int _snapMaxUs = 0;
+  int _opsSum = 0;
+  int _opsMax = 0;
+  int _blkSum = 0;
+  int _blkMax = 0;
+  int _statsAtN = 0;
+
+  /// Snapshots seguidos sobre / bajo el presupuesto.
+  int _overBudget = 0;
+  int _underBudget = 0;
+
+  /// Factor sobre idle/maxGap (1, 2, 4, 8) y cuántas veces se subió.
+  int _backoff = 1;
+  int _backoffs = 0;
+
+  /// Costo medido hasta ahora (para depurar: `ThorReplay.instance?.stats`).
+  ThorReplayStats get stats => ThorReplayStats._(_statsJson());
+
+  Map<String, Object?> _statsJson() {
+    double ms(int us) => (us / 100).round() / 10;
+    final sorted = [..._snapUs]..sort();
+    int pct(double p) =>
+        sorted.isEmpty ? 0 : sorted[((sorted.length - 1) * p).round()];
+    final n = _snapN == 0 ? 1 : _snapN;
+    return {
+      'snap': {
+        'n': _snapN,
+        'p50': ms(pct(.5)),
+        'p95': ms(pct(.95)),
+        'max': ms(_snapMaxUs),
+      },
+      'ops': {'avg': (_opsSum / n).round(), 'max': _opsMax},
+      'blk': {'avg': (_blkSum / n).round(), 'max': _blkMax},
+      'bo': {'n': _backoffs, 'x': _backoff},
+    };
+  }
+
+  void _recordCost(int us, int ops, int blocks) {
+    if (_snapUs.length == 256) _snapUs.removeAt(0);
+    _snapUs.add(us);
+    _snapN++;
+    _snapMaxUs = max(_snapMaxUs, us);
+    _opsSum += ops;
+    _opsMax = max(_opsMax, ops);
+    _blkSum += blocks;
+    _blkMax = max(_blkMax, blocks);
+    // Un snapshot lento aislado (GC, primera compilación) no cuenta: solo
+    // 3 seguidos espacian. Si la pantalla vuelve a ser ligera (10 seguidos
+    // bajo la mitad del presupuesto) se recupera un paso: un catálogo
+    // pesado no debe degradar el replay del resto de la sesión.
+    final budget = _config.snapshotBudget.inMicroseconds;
+    if (us > budget) {
+      _underBudget = 0;
+      if (++_overBudget >= 3 && _backoff < 8) {
+        _backoff *= 2;
+        _backoffs++;
+        _overBudget = 0;
+      }
+    } else {
+      _overBudget = 0;
+      if (us < budget ~/ 2 && ++_underBudget >= 10 && _backoff > 1) {
+        _backoff ~/= 2;
+        _underBudget = 0;
+      }
+    }
+  }
 
   /// Enciende el replay. Requiere Thor inicializado.
   static Future<void> start(
@@ -314,7 +413,7 @@ class ThorReplay {
   void _scheduleSnapshot() {
     _idleTimer?.cancel();
     // Animación continua: no esperar quietud eterna.
-    if (_ts - _lastSnapAt > _config.maxGap.inMilliseconds) {
+    if (_ts - _lastSnapAt > _config.maxGap.inMilliseconds * _backoff) {
       final scheduler = SchedulerBinding.instance;
       // Con un frame en camino se espera a que pinte; con la UI quieta no
       // llega ninguno y el snapshot se perdería.
@@ -325,27 +424,36 @@ class ThorReplay {
       }
       return;
     }
-    _idleTimer = Timer(_config.idle, _snapshot);
+    _idleTimer = Timer(_config.idle * _backoff, _snapshot);
   }
 
   void _snapshot() {
     _lastSnapAt = _ts;
     final Wireframe? wire;
+    final List<List<Object?>> vps;
+    final List<List<Object?>> refs;
+    final Map<String, String> blocks;
+    final String hash;
+    _snapWatch
+      ..reset()
+      ..start();
     try {
       wire = WireframeBuilder(
         maskText: _config.maskText,
         imageUrls: _config.imageUrls,
       ).build();
+      if (wire == null) return;
+      (:vps, :refs, :blocks) = split(wire.ops);
+      hash = fnv(jsonEncode([vps, refs]));
     } on Object {
       return;
     }
-    if (wire == null) return;
+    _snapWatch.stop();
+    _recordCost(_snapWatch.elapsedMicroseconds, wire.ops.length, refs.length);
     _viewports = wire.viewports;
     for (final MapEntry(:key, :value) in wire.offsets.entries) {
       _lastOffsets[key] = value;
     }
-    final (:vps, :refs, :blocks) = _split(wire.ops);
-    final hash = fnv(jsonEncode([vps, refs]));
     if (hash == _prevHash) return;
     _prevHash = hash;
     final offs = {
@@ -369,15 +477,22 @@ class ThorReplay {
   /// item en una lista solo cambia los bloques de alrededor. Las
   /// coordenadas van relativas a la primera primitiva del bloque, así el
   /// mismo componente en otra posición (u otra sesión) es el mismo bloque.
-  ({
+  @visibleForTesting
+  static ({
     List<List<Object?>> vps,
     List<List<Object?>> refs,
     Map<String, String> blocks,
-  }) _split(List<List<Object?>> ops) {
+  }) split(List<List<Object?>> ops) {
     final vps = <List<Object?>>[];
     final refs = <List<Object?>>[];
     final blocks = <String, String>{};
-    var current = <List<Object?>>[];
+    // Cada op se codifica UNA vez, sin su posición: `"r",w,h,…`. De ahí
+    // salen tanto el corte (su hash) como el cuerpo del bloque (se le
+    // inserta la posición relativa). Antes eran dos jsonEncode por op. El
+    // texto resultante es idéntico al de jsonEncode — los hashes no
+    // cambian (lo comprueba replay_cost_test contra la versión original).
+    final current = <List<Object?>>[];
+    final tails = <String>[];
     int? vp;
 
     void close() {
@@ -385,22 +500,28 @@ class ThorReplay {
       final first = current.first;
       final ox = first[1]! as num;
       final oy = first[2]! as num;
-      final rel = [
-        for (final op in current)
-          [
-            op[0],
-            _sub(op[1]! as num, ox),
-            _sub(op[2]! as num, oy),
-            op[3],
-            op[4],
-            ...op.skip(6),
-          ],
-      ];
-      final body = jsonEncode(rel);
-      final hash = fnv(body);
-      blocks[hash] = '["blk","$hash",$body]';
+      final body = StringBuffer('[');
+      for (var i = 0; i < current.length; i++) {
+        final op = current[i];
+        if (i > 0) body.write(',');
+        body
+          ..write('[')
+          ..write(jsonEncode(op[0]))
+          ..write(',')
+          ..write(_json(_sub(op[1]! as num, ox)))
+          ..write(',')
+          ..write(_json(_sub(op[2]! as num, oy)))
+          ..write(',')
+          ..write(tails[i])
+          ..write(']');
+      }
+      body.write(']');
+      final text = body.toString();
+      final hash = fnv(text);
+      blocks[hash] = '["blk","$hash",$text]';
       refs.add([hash, vp, ox, oy]);
-      current = [];
+      current.clear();
+      tails.clear();
     }
 
     for (final op in ops) {
@@ -414,8 +535,12 @@ class ThorReplay {
         close();
         vp = opVp;
       }
+      // `[w,h,…resto]` sin corchetes.
+      final encoded = jsonEncode([op[3], op[4], ...op.skip(6)]);
+      final tail = encoded.substring(1, encoded.length - 1);
       current.add(op);
-      if (current.length >= 4 && _isBoundary(op)) close();
+      tails.add(tail);
+      if (current.length >= 4 && _isBoundary(op[0]! as String, tail)) close();
     }
     close();
     return (vps: vps, refs: refs, blocks: blocks);
@@ -425,8 +550,16 @@ class ThorReplay {
   /// altura empuja la pantalla unos píxeles, el contenido igual debe caer
   /// en los mismos bloques. (Medido en producción: cortar con la posición
   /// hacía nuevos 138 bloques de la 2ª sesión; sin ella, 55.)
-  static bool _isBoundary(List<Object?> op) =>
-      fnv32(jsonEncode([op[0], op[3], op[4], ...op.skip(6)])) % 32 == 0;
+  /// Equivale a `fnv32(jsonEncode([kind, w, h, ...resto])) % 32 == 0`.
+  static bool _isBoundary(String kind, String tail) =>
+      fnv32('[${jsonEncode(kind)},$tail]') % 32 == 0;
+
+  /// Un número como lo escribe jsonEncode. NaN/infinito lanzan igual que
+  /// jsonEncode: el snapshot se descarta en vez de mandar JSON inválido.
+  static String _json(num n) {
+    if (!n.isFinite) throw ArgumentError.value(n, 'n', 'no finito');
+    return n.toString();
+  }
 
   static num _sub(num a, num b) {
     final d = ((a - b) * 2).round();
@@ -557,6 +690,12 @@ class ThorReplay {
   /// sesión sube y [upload], manda el lote. Un fallo de red lo deja para
   /// después.
   Future<void> flush({bool upload = true}) async {
+    // El costo viaja con cada subida / ida a segundo plano (solo si hubo
+    // snapshots nuevos): una línea, ~120 bytes.
+    if (upload && _snapN > _statsAtN) {
+      _statsAtN = _snapN;
+      _writeJson({'t': 'stats', ..._statsJson()});
+    }
     final file = _file;
     if (file != null &&
         (_pendingDisk.isNotEmpty || _unsavedBlocks.isNotEmpty)) {
@@ -630,9 +769,19 @@ class ThorReplay {
 
   /// Dos FNV-1a de 32 bits (semilla y primo distintos) → 16 hex.
   @visibleForTesting
-  static String fnv(String s) =>
-      fnv32(s).toRadixString(16).padLeft(8, '0') +
-      fnv32(s, 0x9747b28c, 0x5bd1e995).toRadixString(16).padLeft(8, '0');
+  static String fnv(String s) {
+    // Las dos pasadas en un solo recorrido del String (mismo resultado que
+    // dos fnv32): los bloques se hashean en cada snapshot.
+    var a = 0x811c9dc5;
+    var b = 0x9747b28c;
+    for (var i = 0; i < s.length; i++) {
+      final c = s.codeUnitAt(i);
+      a = ((a ^ c) * 0x01000193) & 0xFFFFFFFF;
+      b = ((b ^ c) * 0x5bd1e995) & 0xFFFFFFFF;
+    }
+    return a.toRadixString(16).padLeft(8, '0') +
+        b.toRadixString(16).padLeft(8, '0');
+  }
 }
 
 /// Sube lo pendiente cuando la app se va a segundo plano: el sistema puede

@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:thor_flutter/src/visible_tree.dart';
@@ -86,6 +88,11 @@ class WireframeBuilder {
   /// como un rectángulo — nada pesado sale del dispositivo.
   final bool imageUrls;
 
+  /// Usa `getTransformTo` por nodo (la versión lenta de referencia). Solo
+  /// para que los tests comprueben que la caché da lo mismo.
+  @visibleForTesting
+  static bool debugExactTransforms = false;
+
   static final Expando<int> _viewportIds = Expando('thorViewportId');
   static int _nextViewportId = 1;
 
@@ -93,6 +100,9 @@ class WireframeBuilder {
   final List<List<Object?>> _ops = [];
   final List<WireViewport> _viewports = [];
   final Map<int, double> _offsets = {};
+
+  /// Transform de pintado acumulado por render object en este recorrido.
+  final Map<RenderObject, Matrix4> _transforms = HashMap.identity();
 
   /// Recorre desde la raíz. Devuelve `null` si el árbol no está listo
   /// (layout pendiente): mejor perder un snapshot que leer basura.
@@ -183,7 +193,7 @@ class WireframeBuilder {
       _ops.add(['m', ..._box(r), vp, if (imageUrls) ctx.url ?? '']);
     } else if (ro is RenderEditable) {
       _ops.add(['f', ..._box(r), vp, ro.text?.toPlainText().length ?? 0]);
-    } else if (ro.runtimeType.toString() == '_RenderColoredBox') {
+    } else if (VisibleTree.runtimeName(ro) == '_RenderColoredBox') {
       try {
         final color = (ro as dynamic).color as Color;
         _ops.add(['r', ..._box(r), vp, color.toARGB32(), null, null, null]);
@@ -227,8 +237,10 @@ class WireframeBuilder {
   /// Texto enmascarado = largo de cada palabra (`[10, 4, 8]`): conserva
   /// la forma para reconocer la pantalla sin un solo carácter real, y pesa
   /// menos que el texto mismo.
+  static final _spaces = RegExp(r'\s+');
+
   static List<int> _mask(String text) => [
-        for (final word in text.split(RegExp(r'\s+')))
+        for (final word in text.split(_spaces))
           if (word.isNotEmpty) word.runes.length,
       ];
 
@@ -260,11 +272,31 @@ class WireframeBuilder {
 
   Rect? _globalRect(RenderBox ro) {
     try {
-      final m = ro.getTransformTo(null);
+      final m = debugExactTransforms ? ro.getTransformTo(null) : _transform(ro);
       return MatrixUtils.transformRect(m, Offset.zero & ro.size);
     } on Object {
       return null;
     }
+  }
+
+  /// Lo mismo que `ro.getTransformTo(null)` pero memorizado: aquella sube
+  /// hasta la raíz en CADA nodo (O(n·profundidad), con árboles de 60+
+  /// niveles); aquí cada nodo copia el de su padre y aplica un solo paso.
+  /// Mismas operaciones en el mismo orden → los mismos doubles, bit a bit
+  /// (los hashes de bloque no cambian). Como `getTransformTo(null)`, el
+  /// transform de la raíz (`RenderView`, el devicePixelRatio) no se aplica.
+  Matrix4 _transform(RenderObject ro) {
+    final cached = _transforms[ro];
+    if (cached != null) return cached;
+    final parent = ro.parent;
+    final Matrix4 m;
+    if (parent == null || parent.parent == null) {
+      m = Matrix4.identity();
+    } else {
+      m = _transform(parent).clone();
+      parent.applyPaintTransform(ro, m);
+    }
+    return _transforms[ro] = m;
   }
 
   bool _onScreen(Rect r) =>

@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
@@ -31,7 +33,7 @@ abstract final class VisibleTree {
       }
       // El Overlay del Navigator mantiene montadas las rutas tapadas por
       // una opaca (las primeras `skipCount`) pero no las pinta.
-      if (ro.runtimeType.toString() == '_RenderTheater') {
+      if (runtimeName(ro) == '_RenderTheater') {
         final int skip;
         try {
           skip = (ro as dynamic).skipCount as int;
@@ -74,9 +76,20 @@ abstract final class VisibleTree {
     'ThorCrashReportPage',
   };
 
+  static final Map<Type, String> _names = HashMap();
+
+  /// `runtimeType.toString()` memorizado por tipo. Para clases privadas
+  /// del framework (`_RenderTheater`) no hay otra forma de reconocerlas, y
+  /// el recorrido lo pregunta en miles de nodos por snapshot: construir el
+  /// String cada vez se notaba en el perfil.
+  static String runtimeName(Object o) {
+    final t = o.runtimeType;
+    return _names[t] ??= t.toString();
+  }
+
   /// Nombre de clase sin genéricos (`Foo<int>` → `Foo`).
   static String typeName(Widget widget) {
-    final type = widget.runtimeType.toString();
+    final type = runtimeName(widget);
     final i = type.indexOf('<');
     return i == -1 ? type : type.substring(0, i);
   }
