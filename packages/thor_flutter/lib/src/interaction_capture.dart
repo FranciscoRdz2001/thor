@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/visible_tree.dart';
 
 /// Captura de interacciones sin instrumentar la app.
 ///
@@ -38,20 +39,6 @@ class InteractionCapture {
   /// contiene el punto (un `GestureDetector` escrito a mano sí cuenta).
   static const _primitiveTypes = {
     'GestureDetector', 'InkWell', 'InkResponse', 'Card',
-  };
-
-  /// Sufijos que identifican a un widget como "página" para la
-  /// retro-corrección de pantalla.
-  static const _pageSuffixes = ['Page', 'Screen', 'View'];
-
-  /// Widgets del framework que MATCHEAN los sufijos pero jamás son la
-  /// página de la app (bug real: SingleChildScrollView se reportaba como
-  /// pantalla en el POS). Si aparece un falso positivo nuevo, va aquí.
-  static const _pageDenylist = {
-    'SingleChildScrollView', 'ListView', 'GridView', 'CustomScrollView',
-    'NestedScrollView', 'PageView', 'TabBarView', 'ScrollView',
-    'BoxScrollView', 'ReorderableListView', 'InteractiveViewer',
-    'DraggableScrollableSheet',
   };
 
   /// Instala el listener global de punteros. Idempotente.
@@ -135,12 +122,10 @@ class InteractionCapture {
         } else if (_primitiveTypes.contains(typeName)) {
           bestPrimitive = element;
         }
-        if (_pageSuffixes.any(typeName.endsWith) &&
-            !_pageDenylist.contains(typeName)) {
-          pageClass = typeName;
-        }
+        if (VisibleTree.isScreenName(typeName)) pageClass = typeName;
       }
-      element.visitChildElements(visit);
+      // Solo lo pintado: un toque nunca cae en una tab oculta.
+      VisibleTree.visitChildren(element, visit);
     }
 
     rootElement.visitChildElements(visit);

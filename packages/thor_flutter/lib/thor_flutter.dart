@@ -20,6 +20,7 @@ export 'src/overlay/thor_overlay.dart' show ThorOverlayManager;
 export 'src/performance_capture.dart' show PerformanceCapture;
 export 'src/replay/replay_capture.dart' show ThorReplay, ThorReplayConfig;
 export 'src/replay/wireframe.dart' show ThorReplayIgnore;
+export 'src/screen_capture.dart' show ScreenCapture;
 export 'src/screenshot_capture.dart'
     show ThorScreenshot, ThorScreenshotBoundary;
 export 'src/semantics_capture.dart' show SemanticsInteractionCapture;

@@ -10,6 +10,7 @@ import 'package:thor_flutter/src/error_capture.dart';
 import 'package:thor_flutter/src/interaction_capture.dart';
 import 'package:thor_flutter/src/navigator_observer.dart';
 import 'package:thor_flutter/src/performance_capture.dart';
+import 'package:thor_flutter/src/screen_capture.dart';
 import 'package:thor_flutter/src/semantics_capture.dart';
 
 /// Fachada Flutter de Thor — la API que ve la app.
@@ -125,6 +126,8 @@ class Thor {
         // que manejan la app por el árbol semántico.
         SemanticsInteractionCapture.install();
         PerformanceCapture.install();
+        // Tabs y PageView: pantallas que el Navigator no ve.
+        ScreenCapture.install();
         _watchLifecycle();
       }),
       (error, stack) {

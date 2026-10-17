@@ -1,5 +1,6 @@
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
+import 'package:thor_flutter/src/visible_tree.dart';
 
 /// Excluye su subárbol del replay: no se dibuja ni se recorre. Para zonas
 /// sensibles de la app (datos de tarjeta, documentos) y para la UI propia
@@ -113,9 +114,7 @@ class WireframeBuilder {
 
     if (element is RenderObjectElement) {
       final ro = element.renderObject;
-      if (ro is RenderOffstage && ro.offstage) return;
-      if (ro is RenderOpacity && ro.opacity == 0) return;
-      if (ro is RenderAnimatedOpacity && ro.opacity.value == 0) return;
+      if (VisibleTree.isHidden(ro)) return;
       if (ro is RenderBox && ro.hasSize && ro.attached) {
         final rect = _globalRect(ro);
         if (rect == null) return;
@@ -129,7 +128,7 @@ class WireframeBuilder {
         }
       }
     }
-    element.visitChildElements((child) => _visit(child, next));
+    VisibleTree.visitChildren(element, (child) => _visit(child, next));
   }
 
   _Ctx _enterViewport(RenderObject ro, Rect content, _Ctx ctx) {
