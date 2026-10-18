@@ -237,6 +237,13 @@ void main() {
       expect(events.last.payload['ms'], 38000);
       expect('${events.first.payload}', isNot(contains('token')));
     });
+
+    test('externalSurface sin esquema tampoco guarda ruta ni query', () async {
+      final core = await ThorCore.init();
+      core.externalSurface('www.shop.example.com/pago?token=abc#frag');
+      final host = _env('external_surface').single.payload['host'];
+      expect(host, 'www.shop.example.com');
+    });
   });
 
   group('T-N11 problemas visibles', () {

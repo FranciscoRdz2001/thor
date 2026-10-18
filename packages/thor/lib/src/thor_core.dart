@@ -634,13 +634,12 @@ class ThorCore {
     bool open = true,
     int? ms,
   }) {
-    final clean = cleanLogText(
-      Uri.tryParse(host)?.host.isNotEmpty ?? false
-          ? Uri.parse(host).host
-          : host,
-      120,
-      scrub: redaction.scrub,
-    );
+    // Solo el host: con o sin esquema, jamás la ruta, la query ni el
+    // fragmento (pueden traer secretos).
+    final parsed = Uri.tryParse(host)?.host ?? '';
+    final bare =
+        parsed.isNotEmpty ? parsed : host.split(RegExp(r'[/?#]')).first.trim();
+    final clean = cleanLogText(bare, 120, scrub: redaction.scrub);
     recorder.record(ThorEventKind.environment, {
       'signal': 'external_surface',
       'host': clean,
