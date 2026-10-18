@@ -6,15 +6,18 @@ class _Fake implements ThorCrashlyticsClient {
   final Map<String, Object> keys = {};
   final List<String> logs = [];
   bool failing = false;
+  int attempts = 0;
 
   @override
   Future<void> setCustomKey(String key, Object value) async {
+    attempts++;
     if (failing) throw StateError('crashlytics caído');
     keys[key] = value;
   }
 
   @override
   Future<void> log(String message) async {
+    attempts++;
     if (failing) throw StateError('crashlytics caído');
     logs.add(message);
   }
@@ -94,6 +97,7 @@ void main() {
     await Thor.run(() async {});
     Thor.setUser('x');
     await Future<void>.delayed(Duration.zero);
+    expect(fake.attempts, greaterThan(0), reason: 'sí se intentó escribir');
     expect(ThorCore.instance, isNotNull);
     unlink();
   });

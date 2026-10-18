@@ -49,6 +49,13 @@ siguiente arranque, así que el id de sesión sobrevive al crash. Por lo mismo
 los errores **no fatales** que Thor captura ya llevan las keys vigentes en
 cualquier `recordError`; no se toca nada extra.
 
+### Sesiones con muestreo
+
+Si el replay usa `sampleRate < 1`, una sesión no muestreada no se sube y el
+link llevará a una página sin datos (salvo que ocurra un error con
+`uploadOnError`, o se pida subirla bajo demanda). Es lo esperado: el link se
+arma siempre, la sesión existe en el dashboard solo si se subió.
+
 ### Apagado = inofensivo
 
 Con Thor apagado (`enabled: false`) el listener nunca se dispara: cero
