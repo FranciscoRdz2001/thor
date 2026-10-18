@@ -8,5 +8,6 @@ environment:
 workspace:
   - packages/thor
   - packages/thor_bloc
+  - packages/thor_crashlytics
   - packages/thor_flutter
   - packages/thor_test

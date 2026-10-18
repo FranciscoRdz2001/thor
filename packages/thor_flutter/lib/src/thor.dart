@@ -36,6 +36,84 @@ class Thor {
 
   static bool _enabled = false;
 
+  /// Base del dashboard para armar el link de una sesión
+  /// (`<base>/sessions/<id>`). `null` = sin link ([sessionUrl] devuelve
+  /// `null`). Es solo texto: Thor no abre conexión por esto.
+  static String? dashboardBaseUrl;
+
+  /// Id de la sesión actual, o `null` si Thor está apagado / sin iniciar.
+  ///
+  /// Es el mismo id que lleva el replay (`x-thor-session`) y que el
+  /// dashboard usa para encontrar la sesión: sirve para cruzarla con
+  /// herramientas externas (Crashlytics, Sentry…) sin que Thor las conozca.
+  static String? get sessionId => ThorCore.instance?.session.sessionId;
+
+  /// Link de la sesión actual en el dashboard, o `null` si Thor está
+  /// apagado o no hay [dashboardBaseUrl].
+  static String? get sessionUrl => sessionUrlFor(sessionId);
+
+  /// Arma `<base>/sessions/<id>` para [id] con [baseUrl] (por defecto
+  /// [dashboardBaseUrl]); `null` si falta cualquiera de los dos.
+  static String? sessionUrlFor(String? id, {String? baseUrl}) {
+    final base = baseUrl ?? dashboardBaseUrl;
+    if (id == null || base == null || base.isEmpty) return null;
+    // Sin barra final doble: el caller puede pasar la base con o sin ella.
+    final trimmed =
+        base.endsWith('/') ? base.substring(0, base.length - 1) : base;
+    return '$trimmed/sessions/${Uri.encodeComponent(id)}';
+  }
+
+  /// Foto de la sesión actual; `null` si Thor está apagado.
+  static ThorSessionInfo? get sessionInfo {
+    final core = ThorCore.instance;
+    if (core == null) return null;
+    return ThorSessionInfo._(
+      sessionId: core.session.sessionId,
+      sessionUrl: sessionUrl,
+      userId: core.userId,
+    );
+  }
+
+  static final _sessionListeners = <void Function(ThorSessionInfo)>[];
+
+  /// Suscribe a "la sesión empezó" y "cambió el usuario" para que las
+  /// integraciones (Crashlytics, Sentry…) reaccionen sin que Thor dependa
+  /// de ellas.
+  ///
+  /// - Si Thor ya está activo, [listener] se llama de inmediato con el
+  ///   estado actual (así no importa si se registra antes o después de
+  ///   [run]).
+  /// - Si Thor está apagado NO se llama nunca: apagado = inofensivo.
+  /// - Una excepción del listener se traga: una integración rota no debe
+  ///   tumbar la app ni a otros listeners.
+  ///
+  /// Devuelve la función que cancela la suscripción.
+  static void Function() addSessionListener(
+    void Function(ThorSessionInfo info) listener,
+  ) {
+    _sessionListeners.add(listener);
+    final now = sessionInfo;
+    if (now != null) _safeCall(listener, now);
+    return () => _sessionListeners.remove(listener);
+  }
+
+  static void _notifySession() {
+    final info = sessionInfo;
+    if (info == null) return;
+    for (final l in List.of(_sessionListeners)) {
+      _safeCall(l, info);
+    }
+  }
+
+  static void _safeCall(
+    void Function(ThorSessionInfo) l,
+    ThorSessionInfo info,
+  ) {
+    try {
+      l(info);
+    } on Object catch (_) {}
+  }
+
   /// ¿Thor está activo en este proceso?
   static bool get enabled => _enabled;
 
@@ -134,6 +212,7 @@ class Thor {
           capture: capture,
         );
         ThorNetworkCapture.install();
+        _notifySession();
         await body();
         // Los capturadores de error se instalan DESPUÉS del body a
         // propósito: las apps asignan sus propios handlers
@@ -275,12 +354,39 @@ class Thor {
   ///   'tienda': {'id': 431, 'nombre': 'Centro'},
   /// });
   /// ```
-  static void setUser(String? id, {Map<String, Object?>? props}) =>
-      ThorCore.instance?.setUser(id, props: props);
+  static void setUser(String? id, {Map<String, Object?>? props}) {
+    final core = ThorCore.instance;
+    if (core == null) return;
+    final before = core.userId;
+    core.setUser(id, props: props);
+    // Solo si cambió la identidad: refrescar props no debe repetir llamadas
+    // a las integraciones.
+    if (core.userId != before) _notifySession();
+  }
 
   /// Registra un proveedor de contexto de dominio.
   static void addContext(String key, ThorContextProvider provider) =>
       ThorCore.instance?.addContext(key, provider);
+}
+
+/// Foto de la sesión que reciben los listeners de
+/// [Thor.addSessionListener].
+@immutable
+class ThorSessionInfo {
+  const ThorSessionInfo._({
+    required this.sessionId,
+    required this.sessionUrl,
+    required this.userId,
+  });
+
+  /// Id de la sesión de Thor.
+  final String sessionId;
+
+  /// Link al dashboard si hay [Thor.dashboardBaseUrl]; si no, `null`.
+  final String? sessionUrl;
+
+  /// Usuario fijado con [Thor.setUser]; `null` = anónimo.
+  final String? userId;
 }
 
 class _LifecycleWatcher with WidgetsBindingObserver {

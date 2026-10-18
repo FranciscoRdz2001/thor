@@ -1,0 +1,25 @@
+name: thor_crashlytics
+description: >-
+  Puente opcional Thor → Firebase Crashlytics: cada crash nativo lleva el id
+  y el link de la sesión de Thor (custom keys). Thor core no depende de
+  Firebase; este paquete sí y es opt-in.
+version: 0.1.0
+repository: https://github.com/FranciscoRdz2001/thor
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+  flutter: '>=3.24.0'
+
+resolution: workspace
+
+dependencies:
+  firebase_crashlytics: ^4.0.0
+  flutter:
+    sdk: flutter
+  thor_flutter: ^0.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  very_good_analysis: ^7.0.0

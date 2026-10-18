@@ -140,4 +140,83 @@ void main() {
     expect(errors, hasLength(1));
     expect(errors.single.payload['message'], contains('timer suelto'));
   });
+
+  group('enlace de sesión', sessionLinkTests);
+}
+
+void sessionLinkTests() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  tearDown(() {
+    ThorCore.debugReset();
+    Thor.dashboardBaseUrl = null;
+  });
+
+  test('apagado: sin id, sin link y los listeners nunca se llaman', () async {
+    var calls = 0;
+    Thor.dashboardBaseUrl = 'https://thor.example.com';
+    final cancel = Thor.addSessionListener((_) => calls++);
+    await Thor.run(() async {}, enabled: false);
+    Thor.setUser('x');
+    expect(Thor.sessionId, isNull);
+    expect(Thor.sessionUrl, isNull);
+    expect(Thor.sessionInfo, isNull);
+    expect(calls, 0);
+    cancel();
+  });
+
+  test('sessionId y sessionUrl con Thor encendido', () async {
+    await Thor.run(() async {});
+    expect(Thor.sessionId, ThorCore.instance!.session.sessionId);
+    expect(Thor.sessionUrl, isNull, reason: 'sin base no hay link');
+    Thor.dashboardBaseUrl = 'https://thor.example.com/';
+    expect(
+      Thor.sessionUrl,
+      'https://thor.example.com/sessions/${Thor.sessionId}',
+    );
+  });
+
+  test('listener registrado ANTES de run se llama al arrancar', () async {
+    final seen = <ThorSessionInfo>[];
+    final cancel = Thor.addSessionListener(seen.add);
+    expect(seen, isEmpty);
+    await Thor.run(() async {});
+    expect(seen, hasLength(1));
+    expect(seen.single.sessionId, Thor.sessionId);
+    expect(seen.single.userId, isNull);
+    cancel();
+  });
+
+  test('listener registrado DESPUÉS de run recibe el estado actual', () async {
+    await Thor.run(() async {});
+    Thor.setUser('u1');
+    final seen = <ThorSessionInfo>[];
+    final cancel = Thor.addSessionListener(seen.add);
+    expect(seen.single.userId, 'u1');
+    cancel();
+  });
+
+  test('setUser notifica solo si cambia el usuario; cancel deja de avisar',
+      () async {
+    await Thor.run(() async {});
+    final seen = <String?>[];
+    final cancel = Thor.addSessionListener((i) => seen.add(i.userId));
+    Thor.setUser('a');
+    Thor.setUser('a', props: {'plan': 'pro'}); // mismo id: nada
+    Thor.setUser(null);
+    expect(seen, [null, 'a', null]);
+    cancel();
+    Thor.setUser('b');
+    expect(seen, hasLength(3));
+  });
+
+  test('un listener que lanza no tumba a Thor ni a los demás', () async {
+    var ok = 0;
+    final c1 = Thor.addSessionListener((_) => throw StateError('roto'));
+    final c2 = Thor.addSessionListener((_) => ok++);
+    await Thor.run(() async {});
+    expect(ok, 1);
+    c1();
+    c2();
+  });
 }
