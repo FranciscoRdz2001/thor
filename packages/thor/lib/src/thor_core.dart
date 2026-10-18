@@ -168,8 +168,10 @@ class ThorCore {
     String? name,
     Object? error,
     StackTrace? stackTrace,
+    Map<String, Object?>? data,
   }) {
     final max = capture.maxLogLength;
+    final cleanData = _boundData(data, maxLogDataChars);
     final scrub = redaction.scrub;
     recorder.record(
       ThorEventKind.log,
@@ -177,6 +179,7 @@ class ThorCore {
         'level': level.name,
         'source': source,
         'message': cleanLogText(message, max, scrub: scrub),
+        if (cleanData != null) 'data': cleanData,
         if (name != null && name.isNotEmpty)
           'name': cleanLogText(name, 80, scrub: scrub),
         if (error != null) ...{
@@ -188,6 +191,46 @@ class ThorCore {
       },
       origin: stackTrace == null ? null : originFromStack(stackTrace),
     );
+  }
+
+  /// Tope de los campos estructurados de un log (`data`) serializados.
+  static const maxLogDataChars = 2048;
+
+  /// Tope de las `props` de un [track] serializadas (~2 KB).
+  static const maxTrackPropsChars = 2048;
+
+  /// Tope del nombre de un evento de negocio.
+  static const _maxTrackNameChars = 80;
+
+  /// Graba un evento de negocio (`ThorEventKind.track`): `payload`
+  /// `{name, props?}`. Es lo que la app manda A PROPÓSITO para contar el
+  /// recorrido ("agregó al carrito", "pagó"), así que [props] se guardan
+  /// legibles salvo secretos (política vigente: con la de por defecto solo
+  /// se tapan claves y valores de secreto; con `strict()` los valores
+  /// sueltos se enmascaran). Lo que no es JSON se convierte a texto y más
+  /// de [maxTrackPropsChars] se descarta (queda `{"_truncated": true}`).
+  void track(String name, [Map<String, Object?> props = const {}]) {
+    final clean = _boundData(props, maxTrackPropsChars);
+    recorder.record(ThorEventKind.track, {
+      'name': cleanLogText(name, _maxTrackNameChars, scrub: redaction.scrub),
+      if (clean != null) 'props': clean,
+    });
+  }
+
+  /// [data] redactado con la política vigente, forzado a JSON puro y
+  /// acotado a [maxChars] serializados; `null` si no hay datos.
+  Map<String, Object?>? _boundData(Map<String, Object?>? data, int maxChars) {
+    if (data == null || data.isEmpty) return null;
+    try {
+      final redacted = redaction.redactValue(data);
+      // Ida y vuelta por JSON: valida, y lo no serializable queda como texto.
+      final json = jsonEncode(redacted, toEncodable: (v) => v.toString());
+      if (json.length > maxChars) return {'_truncated': true};
+      return (jsonDecode(json) as Map).cast<String, Object?>();
+    } on Object {
+      // Un mapa cíclico o un toString que lanza no puede tumbar a la app.
+      return {'_unserializable': true};
+    }
   }
 
   /// [text] limpio con [scrub] y recortado a [max].

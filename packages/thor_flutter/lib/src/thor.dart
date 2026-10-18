@@ -320,12 +320,16 @@ class Thor {
   /// `token=…`, `password=…`) antes de grabarse, y se recortan; con
   /// `RedactionPolicy.strict()` también de emails, números largos y
   /// tokens sueltos.
+  ///
+  /// [data]: campos estructurados (JSON libre) que acompañan al mensaje
+  /// (`data: {'orderId': 42}`); sin secretos y acotados a ~2 KB.
   static void log(
     String message, {
     ThorLogLevel level = ThorLogLevel.info,
     String name = '',
     Object? error,
     StackTrace? stackTrace,
+    Map<String, Object?>? data,
   }) {
     developer.log(
       message,
@@ -345,7 +349,23 @@ class Thor {
       name: name,
       error: error,
       stackTrace: stackTrace,
+      data: data,
     );
+  }
+
+  /// Registra un evento de negocio con nombre y propiedades:
+  /// `Thor.track('add_to_cart', {'sku': 'A1', 'qty': 2})`.
+  ///
+  /// Queda en la línea de tiempo, el journal, el reporte y el replay
+  /// (`ev` `k: "track"`, `p: {n, props?}`). [props] es JSON libre: se
+  /// guarda legible salvo secretos (contraseña, token, tarjeta…) y se
+  /// descarta si pesa más de ~2 KB. No-op con Thor apagado.
+  static void track(String name, [Map<String, Object?> props = const {}]) {
+    try {
+      ThorCore.instance?.track(name, props);
+    } on Object {
+      // Registrar jamás debe tumbar a la app.
+    }
   }
 
   /// Pantalla manual para navegación que el Navigator no ve.

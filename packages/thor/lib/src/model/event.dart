@@ -34,6 +34,11 @@ enum ThorEventKind {
   /// local y profundidad de colas de sincronización. Familia propia
   /// porque es charlatana — no debe desalojar errores ni red.
   storage,
+
+  /// Evento de negocio explícito de la app (`Thor.track('add_to_cart')`).
+  /// Familia propia: es escaso y valioso, no debe competir por cuota con
+  /// las líneas de consola.
+  track,
 }
 
 /// Identidad de la pantalla activa en el momento de un evento.

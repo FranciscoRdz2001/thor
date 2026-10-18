@@ -186,7 +186,10 @@ void main() {
       dir.deleteSync(recursive: true);
     });
 
-    Future<List<Map<String, Object?>>> logRecords(WidgetTester tester) async {
+    Future<List<Map<String, Object?>>> evRecords(
+      WidgetTester tester,
+      String kind,
+    ) async {
       await tester.runAsync(ThorReplay.stop);
       final file = dir
           .listSync()
@@ -195,10 +198,13 @@ void main() {
       return [
         for (final line in file.readAsLinesSync())
           if (jsonDecode(line) case final Map<String, Object?> m
-              when m['t'] == 'ev' && m['k'] == 'log')
+              when m['t'] == 'ev' && m['k'] == kind)
             (m['p']! as Map).cast<String, Object?>(),
       ];
     }
+
+    Future<List<Map<String, Object?>>> logRecords(WidgetTester tester) =>
+        evRecords(tester, 'log');
 
     void logAllLevels(String tag) {
       for (final level in ThorLogLevel.values) {
@@ -222,6 +228,31 @@ void main() {
       expect(body, isNot(contains('hunter2')));
       expect(body, isNot(contains('abc123')));
       expect(logs.map((p) => p['lv']), ['error', 'debug']);
+    });
+
+    testWidgets('Thor.log con data y Thor.track viajan al replay',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: Text('x')));
+      await tester.runAsync(
+        () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+      );
+      Thor.log('cobro', data: {'orderId': 7, 'token': 'zzz'});
+      Thor.track('add_to_cart', {'sku': 'A1', 'password': 'pw'});
+      Thor.track('sin_props');
+
+      final logs = await logRecords(tester);
+      final log = logs.singleWhere((p) => p['m'] == 'cobro');
+      expect(log['lv'], 'info');
+      expect(log['data'], {
+        'orderId': 7,
+        'token': RedactionPolicy.redactedMarker,
+      });
+      final tracks = await evRecords(tester, 'track');
+      expect(tracks[0], {
+        'n': 'add_to_cart',
+        'props': {'sku': 'A1', 'password': RedactionPolicy.redactedMarker},
+      });
+      expect(tracks[1], {'n': 'sin_props'});
     });
 
     testWidgets('strict: solo warn/error; en diagnóstico todos; sin emails',

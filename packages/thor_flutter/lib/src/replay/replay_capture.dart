@@ -182,9 +182,13 @@ class ThorReplayStats {
 ///   el texto en pantalla); `p.k` la Key, solo si el label es legible.
 ///   Un log (`k: "log"`) es `p.l` (marca de `Thor.mark`) o
 ///   `{lv, src, m, n?, err?, x?}` (línea de consola sin secretos; `x` =
-///   líneas recortadas por ráfaga). Solo warn/error, salvo en modo
-///   diagnóstico. `{l: "report", reason?}` = el usuario tocó "Reportar
-///   problema" ([requestUpload]).
+///   líneas recortadas por ráfaga; `data?` = campos estructurados de
+///   `Thor.log(data: …)`, sin secretos y ≤ 2 KB). Solo warn/error, salvo
+///   en modo diagnóstico y los `Thor.log` con `data`.
+///   Un evento de negocio (`k: "track"`) es `{n, props?}`
+///   (`Thor.track(name, props)`; props sin secretos, ≤ 2 KB).
+///   `{l: "report", reason?}` = el usuario tocó "Reportar problema"
+///   ([requestUpload]).
 ///
 ///   Red (`k: "network"`), TODAS las peticiones (exitosas también; nunca
 ///   imágenes, fuentes ni assets estáticos):
@@ -827,6 +831,7 @@ class ThorReplay {
       ThorEventKind.network => _slimNetwork(p, event.origin),
       ThorEventKind.state => _slimState(p),
       ThorEventKind.log => _slimLog(p),
+      ThorEventKind.track => _slimTrack(p),
       _ => null,
     };
     if (slim == null) return;
@@ -1024,17 +1029,37 @@ class ThorReplay {
     if (p['label'] != null) return {'l': p['label']};
     final level = ThorLogLevel.tryParse(p['level']);
     if (level == null) return null;
-    if (!level.isHigh && !_diagnostic) return null;
+    // Un `Thor.log` con `data` es deliberado (la app quiso dejar campos
+    // estructurados): entra en cualquier nivel. La consola sigue filtrada.
+    final deliberate = p['source'] == 'thor' && p['data'] != null;
+    if (!level.isHigh && !_diagnostic && !deliberate) return null;
     Object? clean(Object? v) => v is String ? _scrub(v) : v;
     return {
       'lv': level.name,
       'src': p['source'],
       'm': clean(p['message']),
+      if (p['data'] != null) 'data': _slimData(p['data']),
       if (p['name'] != null) 'n': clean(p['name']),
       if (p['error'] != null) 'err': clean(p['error']),
       if (p['burst'] == true) 'x': p['dropped'],
     };
   }
+
+  /// Evento de negocio (`Thor.track`): `{n, props?}`. Las props ya vienen
+  /// sin secretos del núcleo; en [ThorPrivacy.strict] se re-redactan con
+  /// la política estricta (valores enmascarados).
+  Map<String, Object?> _slimTrack(Map<String, Object?> p) => {
+        'n': switch (p['name']) {
+          final String n => _scrub(n),
+          final other => other,
+        },
+        if (p['props'] != null) 'props': _slimData(p['props']),
+      };
+
+  /// Campos estructurados (`data` de un log, `props` de un track): tal
+  /// cual (solo secretos tapados) o re-redactados en estricto.
+  Object? _slimData(Object? data) =>
+      _strict ? _strictPolicy.redactValue(data) : data;
 
   static final _staticAsset = RegExp(
     r'(assets|img|cdn)[^/]*\.|\.(png|jpe?g|webp|svg|gif|woff2?)(\?|$)',

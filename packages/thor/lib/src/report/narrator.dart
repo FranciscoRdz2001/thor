@@ -152,10 +152,16 @@ class ThorNarrator {
           nested(event, '$icon log ${event.payload['source']}: $short');
           final error = event.payload['error'];
           if (error != null) detail('error: $error');
+          final data = event.payload['data'];
+          if (data != null) detail('data: ${_short(jsonEncode(data))}');
         case ThorEventKind.performance:
           final slow = event.payload['slowFrames'];
           final worst = event.payload['worstMs'];
           nested(event, '⚠ Jank: $slow frames lentos (peor ${worst}ms)');
+        case ThorEventKind.track:
+          final props = event.payload['props'];
+          final shown = props == null ? '' : ' ${_short(jsonEncode(props))}';
+          numbered(event, '★ ${event.payload['name']}$shown');
         case ThorEventKind.storage:
           // Solo la cola entra en la narrativa: las escrituras sueltas son
           // ruido, la profundidad es la que cuenta la historia.
@@ -172,6 +178,9 @@ class ThorNarrator {
     }
     return lines.join('\n');
   }
+
+  static String _short(String s) =>
+      s.length <= 200 ? s : '${s.substring(0, 200)}…';
 
   static String _pathOf(Object? url) {
     if (url is! String) return '?';
