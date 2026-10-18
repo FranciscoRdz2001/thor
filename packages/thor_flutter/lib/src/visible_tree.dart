@@ -72,6 +72,9 @@ abstract final class VisibleTree {
     'ReorderableListView',
     'InteractiveViewer',
     'DraggableScrollableSheet',
+    // Envoltorio de CADA diálogo y hoja del framework: marcaba como
+    // "pantalla" a los filtros, el micrófono y cualquier showDialog.
+    'DisplayFeatureSubScreen',
     'ThorInspectorPage',
     'ThorCrashReportPage',
   };

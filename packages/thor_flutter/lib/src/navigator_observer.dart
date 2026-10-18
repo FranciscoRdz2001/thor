@@ -1,9 +1,28 @@
+import 'dart:async';
+import 'dart:io' show Platform;
+
+import 'package:clock/clock.dart';
 import 'package:flutter/cupertino.dart' show CupertinoPageRoute;
 import 'package:flutter/material.dart' show MaterialPageRoute;
 import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/overlay/thor_overlay.dart';
 import 'package:thor_flutter/src/overlay/thor_ui.dart';
+
+/// Navegación inicial retenida (ver `ThorNavigatorObserver.firstScreenSettle`).
+class _HeldNav {
+  _HeldNav({
+    required this.payload,
+    required this.screen,
+    required this.at,
+    required this.timer,
+  });
+
+  final Map<String, Object?> payload;
+  final ScreenId screen;
+  final DateTime at;
+  final Timer timer;
+}
 
 /// Observer universal de navegación.
 ///
@@ -39,6 +58,35 @@ class ThorNavigatorObserver extends NavigatorObserver {
   static bool overlayEnabled = false;
 
   ThorCore? get _core => ThorCore.instance;
+
+  /// La primera pantalla de la sesión que se reemplaza en este tiempo no la
+  /// vio el usuario (`Onboarding` → `Splash` a los 3 ms): no queda en la
+  /// línea de tiempo. Igual que `PerformanceCapture.firstScreenSettle` (una
+  /// sola regla para "la primera pantalla").
+  @visibleForTesting
+  static Duration firstScreenSettle = const Duration(milliseconds: 50);
+
+  /// Retener la primera pantalla (ver [firstScreenSettle]). Apagado en las
+  /// pruebas de widgets de la app (`FLUTTER_TEST`): el `Timer` de espera
+  /// dejaría "timers pendientes". Las pruebas de Thor lo encienden.
+  @visibleForTesting
+  static bool holdFirstScreen =
+      !Platform.environment.containsKey('FLUTTER_TEST');
+
+  /// La primera navegación, retenida mientras no se sabe si es transitoria.
+  _HeldNav? _held;
+  bool _firstNavSeen = false;
+
+  /// Graba la navegación retenida (la primera pantalla aguantó).
+  void _flushHeld() {
+    final held = _held;
+    if (held == null) return;
+    _held = null;
+    held.timer.cancel();
+    final core = _core;
+    if (core == null) return;
+    _record(core, held);
+  }
 
   /// La pantalla que estaba activa MIENTRAS la ruta era la de arriba, al
   /// momento de taparla con otra ruta. Al hacer pop hay que devolver
@@ -111,7 +159,7 @@ class ThorNavigatorObserver extends NavigatorObserver {
     final screen =
         restored ?? resolveScreen(route, tryBuilder: resolveWidgetClass);
     core.recorder.currentScreen = screen;
-    core.recorder.record(ThorEventKind.navigation, {
+    final payload = <String, Object?>{
       'action': action,
       'to': screen.display,
       if (from != null)
@@ -120,7 +168,56 @@ class ThorNavigatorObserver extends NavigatorObserver {
       if (route.settings.arguments != null)
         // Solo la FORMA de los argumentos, nunca valores (PII).
         'argsType': route.settings.arguments.runtimeType.toString(),
-    });
+    };
+
+    // La primera pantalla de la sesión se retiene [firstScreenSettle]: si
+    // otra la reemplaza antes, nunca fue "visible" y no se anota.
+    final held = _held;
+    if (held != null) {
+      held.timer.cancel();
+      _held = null;
+      final settled = clock.now().difference(held.at) > firstScreenSettle;
+      if (settled) {
+        _record(core, held);
+      } else {
+        // Transitoria: el destino no hereda su `from` (no está en la línea
+        // de tiempo) y deja constancia de lo que se saltó.
+        payload
+          ..remove('from')
+          ..['skipped'] = held.payload['to'];
+      }
+    } else if (holdFirstScreen &&
+        !_firstNavSeen &&
+        previous == null &&
+        action == 'push') {
+      _firstNavSeen = true;
+      _held = _HeldNav(
+        payload: payload,
+        screen: screen,
+        at: clock.now(),
+        timer: Timer(firstScreenSettle, _flushHeld),
+      );
+      return;
+    }
+    _firstNavSeen = true;
+
+    // Empujar encima la MISMA pantalla que ya está (doble `push HomeScreen`
+    // tras un logout silencioso o un doble toque): se marca.
+    if (action == 'push' &&
+        previous != null &&
+        previous.widgetClass != null &&
+        previous.widgetClass == screen.widgetClass) {
+      payload['duplicate'] = true;
+    }
+    core.recorder.record(ThorEventKind.navigation, payload);
+  }
+
+  void _record(ThorCore core, _HeldNav held) {
+    core.recorder.record(
+      ThorEventKind.navigation,
+      held.payload,
+      screenOverride: held.screen,
+    );
   }
 
   /// Cascada de resolución de identidad. Estática y pública para que el

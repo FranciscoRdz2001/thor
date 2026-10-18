@@ -1,7 +1,9 @@
 import 'package:clock/clock.dart';
+import 'package:flutter/cupertino.dart' show CupertinoButton;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/dead_tap_capture.dart';
 import 'package:thor_flutter/src/icon_names.dart';
 import 'package:thor_flutter/src/overlay/thor_ui.dart' show ThorOwnUi;
 import 'package:thor_flutter/src/replay/wireframe.dart'
@@ -95,6 +97,7 @@ class InteractionCapture {
       GestureBinding.instance.pointerRouter.removeGlobalRoute(_route!);
     }
     FocusManager.instance.removeListener(_onFocusChanged);
+    _endTextWatch();
     _focused = null;
     _downPointer = null;
     _downAt = null;
@@ -170,7 +173,7 @@ class InteractionCapture {
       _retroCorrect(core, probe.pageClass);
       if (hit == null) return;
       final long = held >= kLongPressTimeout;
-      core.recorder.record(ThorEventKind.interaction, {
+      final tapEvent = core.recorder.record(ThorEventKind.interaction, {
         'gesture': long ? ThorGesture.longPress : ThorGesture.tap,
         'widget': hit.widgetType,
         if (hit.label != null) 'label': hit.label,
@@ -180,6 +183,16 @@ class InteractionCapture {
         if (hit.hidden) 'hidden': true,
         if (long) 'durationMs': held.inMilliseconds,
       });
+      // ¿Hizo algo ese botón? (toque sin efecto)
+      if (tapEvent != null && !long && !hit.hidden) {
+        DeadTapCapture.onTap(
+          core,
+          tapEvent,
+          widgetType: hit.widgetType,
+          label: hit.label,
+          disabled: hit.disabled,
+        );
+      }
     } on Object {
       // La captura de interacciones jamás puede tirar la app que observa.
     }
@@ -294,9 +307,57 @@ class InteractionCapture {
 
   static FocusNode? _focused;
 
+  /// Texto de al menos este largo: el evento de edición dice de dónde vino
+  /// (`typed` o `pasted_or_scanned`). Una consulta de 60 caracteres no la
+  /// tecleó nadie: la pegó o la escaneó, y ese dato explica el bug.
+  @visibleForTesting
+  static int longTextThreshold = 50;
+
+  /// Un solo cambio que agrega más de esto de golpe = pegado, autocompletar
+  /// o lector de códigos (teclear agrega 1; el IME, 2–3 con corrección).
+  static const int _pasteJump = 3;
+
+  static _TextWatch? _watch;
+
+  /// Cierra la observación del campo anterior: si el texto cambió, deja un
+  /// `text_edit` con tamaños (nunca el contenido).
+  static void _endTextWatch() {
+    final w = _watch;
+    _watch = null;
+    if (w == null) return;
+    try {
+      w.controller.removeListener(w.onChange);
+      if (w.edits == 0) return;
+      final core = ThorCore.instance;
+      if (core == null) return;
+      final length = w.controller.text.length;
+      core.recorder.record(ThorEventKind.interaction, {
+        'gesture': ThorGesture.textEdit,
+        'widget': w.type,
+        if (w.label != null) 'label': w.label,
+        'copy': true,
+        'isTextInput': true,
+        'edits': w.edits,
+        if (w.obscure)
+          // Contraseña: ni el largo (revela información); solo si quedó vacío.
+          ...{'obscure': true, 'empty': length == 0}
+        else ...{
+          'length': length,
+          'startLength': w.startLength,
+          'empty': length == 0,
+          if (length >= longTextThreshold)
+            'source': w.maxJump > _pasteJump ? 'pasted_or_scanned' : 'typed',
+        },
+      });
+    } on Object {
+      // El controlador pudo morir con su pantalla: nada que anotar.
+    }
+  }
+
   static void _onFocusChanged() {
     final node = FocusManager.instance.primaryFocus;
     if (identical(node, _focused)) return;
+    _endTextWatch();
     _focused = node;
     final context = node?.context;
     if (context == null) return;
@@ -329,6 +390,7 @@ class InteractionCapture {
           : field != null
               ? 'TextField'
               : _stripGenerics(editable.runtimeType.toString());
+      ScreenCapture.onTextFocus();
       core.recorder.record(ThorEventKind.interaction, {
         'gesture': ThorGesture.textFocus,
         'widget': type,
@@ -337,7 +399,20 @@ class InteractionCapture {
         'isTextInput': true,
         if (editable.obscureText) 'obscure': true,
         'keyboard': editable.keyboardType.toString(),
+        // Tamaño del texto al enfocar (nunca el contenido; en un campo de
+        // contraseña, ni el tamaño).
+        if (!editable.obscureText) ...{
+          'length': editable.controller.text.length,
+          'empty': editable.controller.text.isEmpty,
+        } else
+          'empty': editable.controller.text.isEmpty,
       });
+      _watch = _TextWatch(
+        controller: editable.controller,
+        type: type,
+        label: label,
+        obscure: editable.obscureText,
+      )..attach();
     } on Object {
       // Observar el foco jamás puede tirar la app.
     }
@@ -422,6 +497,7 @@ class InteractionCapture {
         labelIsCopy: mark == _Mark.show || (label?.copy ?? false),
         hidden: mark == _Mark.hidden,
         thorUi: mark == _Mark.thor,
+        disabled: _isDisabledButton(target.widget),
       );
     }
     return _Probe(
@@ -431,6 +507,16 @@ class InteractionCapture {
       thorUi: thorUi || (hit?.thorUi ?? false),
     );
   }
+
+  /// Botón de acción con `onPressed: null`: el toque no puede hacer nada.
+  static bool _isDisabledButton(Widget w) => switch (w) {
+        ButtonStyleButton(:final onPressed, :final onLongPress) =>
+          onPressed == null && onLongPress == null,
+        IconButton(:final onPressed) => onPressed == null,
+        FloatingActionButton(:final onPressed) => onPressed == null,
+        CupertinoButton(:final onPressed) => onPressed == null,
+        _ => false,
+      };
 
   static String _stripGenerics(String type) {
     final i = type.indexOf('<');
@@ -593,6 +679,39 @@ class InteractionCapture {
   static const double _maxAncestorGrowth = 6;
 }
 
+/// Observa los cambios de un campo mientras tiene el foco: cuántos, cuánto
+/// creció el mayor de golpe y el largo de partida. Un listener por campo
+/// enfocado (no por frame); solo compara largos, jamás copia el texto.
+class _TextWatch {
+  _TextWatch({
+    required this.controller,
+    required this.type,
+    required this.label,
+    required this.obscure,
+  })  : startLength = controller.text.length,
+        _lastLength = controller.text.length;
+
+  final TextEditingController controller;
+  final String type;
+  final String? label;
+  final bool obscure;
+  final int startLength;
+  int _lastLength;
+  int edits = 0;
+  int maxJump = 0;
+
+  void onChange() {
+    final length = controller.text.length;
+    if (length == _lastLength) return; // selección/cursor, no edición.
+    final grew = length - _lastLength;
+    if (grew > maxJump) maxJump = grew;
+    _lastLength = length;
+    edits++;
+  }
+
+  void attach() => controller.addListener(onChange);
+}
+
 /// Descripción de un tap resuelta desde el árbol (visible para tests).
 typedef HitDescription = _Hit;
 
@@ -621,7 +740,11 @@ class _Hit {
     this.labelIsCopy = false,
     this.hidden = false,
     this.thorUi = false,
+    this.disabled = false,
   });
+
+  /// Botón de acción deshabilitado (`onPressed: null`).
+  final bool disabled;
 
   final String widgetType;
   final String? label;

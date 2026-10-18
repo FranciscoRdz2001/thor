@@ -86,6 +86,26 @@ class ScreenCapture {
     _tapTimer = null;
   }
 
+  /// El usuario enfocó un campo de texto: un contexto de pantalla que
+  /// PUSO LA APP (`Thor.setScreenContext('Búsqueda > 7501055300')`) ya no
+  /// se puede dar por vigente — la consulta va a cambiar y la app aún no lo
+  /// dijo. Se quita (queda `screen_context` nulo) hasta que la app lo
+  /// vuelva a fijar; el título del AppBar, que sí se recalcula solo, no se
+  /// toca. Así las peticiones de una búsqueda nueva no salen con la
+  /// consulta anterior.
+  static void onTextFocus() {
+    final core = ThorCore.instance;
+    final current = core?.recorder.currentScreen;
+    if (core == null || current == null || current.detail == null) return;
+    if (current.detail == _autoDetail) return;
+    core.recorder.currentScreen = current.withDetail(null);
+    core.recorder.record(ThorEventKind.environment, {
+      'signal': 'screen_context',
+      'value': null,
+      'reason': 'text_focus',
+    });
+  }
+
   /// Un toque terminó (lo llama `InteractionCapture`): mira el árbol una
   /// vez, poco después, para anotar el cambio de pantalla que ese toque
   /// provoca (tab, página) sin esperar a que la pantalla nueva termine de
@@ -161,9 +181,22 @@ class ScreenCapture {
   /// otro departamento): el contexto se actualiza, salvo que la app haya
   /// puesto el suyo con `Thor.setScreenContext`.
   static void _syncTitle(ThorCore core, String? title) {
-    if (title == null) return;
     final current = core.recorder.currentScreen;
-    if (current == null || current.detail == title) return;
+    if (current == null) return;
+    if (title == null) {
+      // El AppBar que daba el contexto ya no está: no se hereda su título
+      // (el escáner salía con `sd` de la pantalla anterior).
+      if (current.detail != null && current.detail == _autoDetail) {
+        _autoDetail = null;
+        core.recorder.currentScreen = current.withDetail(null);
+        core.recorder.record(ThorEventKind.environment, {
+          'signal': 'screen_context',
+          'value': null,
+        });
+      }
+      return;
+    }
+    if (current.detail == title) return;
     if (current.detail != null && current.detail != _autoDetail) return;
     if (_titleSyncs >= _maxTitleSyncs) return;
     _titleSyncs++;

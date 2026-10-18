@@ -147,22 +147,29 @@ void main() {
       ]);
     });
 
-    testWidgets('memory_pressure tras inactive va marcado; uno real no',
+    testWidgets('memory_pressure en la ida a background se descarta',
         (tester) async {
+      EnvironmentCapture.suppressedMemoryPressure = 0;
       EnvironmentCapture.install();
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       clock = clock.add(const Duration(milliseconds: 600));
       tester.binding.handleMemoryPressure();
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-      expect(signals('memory_pressure'), [
-        {'signal': 'memory_pressure', 'transition': true},
-      ]);
+      // Ruido de la transición: no hay evento, solo cuenta.
+      expect(signals('memory_pressure'), isEmpty);
+      expect(EnvironmentCapture.suppressedMemoryPressure, 1);
+      // Justo después de `paused` tampoco.
+      clock = clock.add(const Duration(milliseconds: 500));
+      tester.binding.handleMemoryPressure();
+      expect(signals('memory_pressure'), isEmpty);
 
       // Mucho después, en primer plano: aviso real.
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       clock = clock.add(const Duration(seconds: 30));
       tester.binding.handleMemoryPressure();
-      expect(signals('memory_pressure').last, {'signal': 'memory_pressure'});
+      expect(signals('memory_pressure'), [
+        {'signal': 'memory_pressure'},
+      ]);
     });
 
     testWidgets('al volver (resumed) también hay ventana', (tester) async {
@@ -172,7 +179,7 @@ void main() {
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       clock = clock.add(const Duration(milliseconds: 300));
       tester.binding.handleMemoryPressure();
-      expect(signals('memory_pressure').single['transition'], isTrue);
+      expect(signals('memory_pressure'), isEmpty);
     });
   });
 
@@ -193,6 +200,9 @@ void main() {
       );
       EnvironmentCapture.install();
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      // Fuera de la ventana de transición: aviso real.
+      final later = DateTime.now().add(const Duration(seconds: 10));
+      EnvironmentCapture.now = () => later;
       tester.binding.handleMemoryPressure();
       tester.platformDispatcher.textScaleFactorTestValue = 1.5;
       addTearDown(tester.platformDispatcher.clearAllTestValues);

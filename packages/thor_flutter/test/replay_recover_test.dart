@@ -51,6 +51,8 @@ void main() {
     expect(received['old-1'], [
       '["st",10,"1111111111111111",{},[],[["aaaaaaaaaaaaaaaa",0,0,0]]]',
       '["p",20,"d",1,1]',
+      // La sesión murió sin cerrar: la recuperación anota cómo.
+      '{"t":"end","reason":"crash","ts":20,"bg":0,"q":2}',
       '["blk","aaaaaaaaaaaaaaaa",[["r",0,0,10,10,null,null,null,null]]]',
     ]);
     expect(

@@ -203,6 +203,7 @@ void main() {
     expect(ingested, [
       '["p",30,"u",1,1,3]',
       '{"t":"ev","ts":40,"k":"log","p":{"l":"x"},"q":4}',
+      '{"t":"end","reason":"crash","ts":40,"bg":0,"q":5}',
     ]);
     expect(
       dir.listSync().map((f) => f.uri.pathSegments.last),

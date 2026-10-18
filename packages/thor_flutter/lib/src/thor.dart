@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 import 'package:stack_trace/stack_trace.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/anr_watchdog.dart';
+import 'package:thor_flutter/src/device_model.dart';
 import 'package:thor_flutter/src/environment_capture.dart';
 import 'package:thor_flutter/src/error_capture.dart';
 import 'package:thor_flutter/src/interaction_capture.dart';
@@ -200,6 +201,13 @@ class Thor {
   ///   `gap` del replay. `null` desactiva la renovación (una sola sesión
   ///   por proceso; el tiempo en background se sigue excluyendo).
   ///
+  /// - [bodyRules]: reglas de cuerpo por endpoint ([ThorBodyRule]): más
+  ///   bytes retenidos y extractos JSONPath (`{'quantity': r'$..quantity'}`
+  ///   → `{n, sum, min, max, values}` en `extracts` del evento y `x` del
+  ///   replay) para respuestas que el tope de 8 KB corta (árbol de
+  ///   categorías, patrocinados). Los extractos salen del cuerpo ya sin
+  ///   secretos.
+  ///
   /// [showOverlay] monta la burbuja del inspector y el aviso de "la sesión
   /// anterior se cayó". Son herramientas de QA: en producción dejarlo en
   /// `false` (con [enabled] en `false` ni siquiera se instalan). Aunque
@@ -225,11 +233,15 @@ class Thor {
     Duration? anrThreshold = const Duration(seconds: 2),
     bool anrInDebug = false,
     Duration? sessionTimeout = const Duration(minutes: 30),
+    List<ThorBodyRule> bodyRules = const [],
   }) async {
     if (!enabled) {
       await body();
       return;
     }
+    ThorNetworkCapture.bodyRules
+      ..clear()
+      ..addAll(bodyRules);
     PerformanceCapture.markRunStart();
     _enabled = true;
     // Paquetes propios de transporte (`mi_sdk`) que NO deben salir como
@@ -270,7 +282,7 @@ class Thor {
             version: appVersion,
             build: appBuild,
           ),
-          deviceInfo: {..._collectDeviceInfo(), ...deviceInfo},
+          deviceInfo: {..._withModel(_collectDeviceInfo()), ...deviceInfo},
           capture: capture,
         );
         ThorNetworkCapture.install();
@@ -359,6 +371,14 @@ class Thor {
       'dartVersion': Platform.version.split(' ').first,
       ..._simulatorInfo(),
     };
+  }
+
+  /// `os`, `osVersion`… más el `model` exacto cuando se pudo saber sin
+  /// plugin (ver [DeviceModel]).
+  static Map<String, String> _withModel(Map<String, String> info) {
+    if (info['model'] != null) return info;
+    final model = DeviceModel.detect();
+    return model == null ? info : {...info, 'model': model};
   }
 
   /// `simulator` (y el modelo simulado) sin plugin. iOS: el simulador
@@ -475,6 +495,52 @@ class Thor {
       ThorCore.instance?.measure(name, ms, data: data);
     } on Object {
       // Medir jamás debe tumbar a la app.
+    }
+  }
+
+  /// Un permiso del sistema cambió o se pidió: `camera`, `microphone`,
+  /// `speech`, `location`, `photos`, `contacts`, `notifications`.
+  ///
+  /// ```dart
+  /// final status = await Permission.camera.request();
+  /// Thor.permission('camera', before: 'undetermined',
+  ///     after: status.name, prompt: true);
+  /// ```
+  ///
+  /// Queda como `environment {signal: 'permission', kind, before, after,
+  /// prompt}` en la línea de tiempo y el replay. Thor además infiere un
+  /// `denied` cuando un error trae un permiso rechazado (cámara, micrófono,
+  /// voz). No-op con Thor apagado.
+  static void permission(
+    String kind, {
+    String? before,
+    String? after,
+    bool prompt = false,
+  }) {
+    try {
+      ThorCore.instance
+          ?.permission(kind, before: before, after: after, prompt: prompt);
+    } on Object {
+      // Registrar jamás debe tumbar a la app.
+    }
+  }
+
+  /// La app cedió la pantalla a una superficie externa: Safari / Custom
+  /// Tab (`mode: 'in_app_browser'`), otra app (`external_app`), un WebView
+  /// propio (`webview`) o una hoja del sistema (`system_ui`). Llámalo al
+  /// abrir (`open: true`) y al volver (`open: false`, con [ms] si lo
+  /// sabes). Solo viaja el HOST de [url] (nunca ruta ni query). No-op con
+  /// Thor apagado.
+  static void externalSurface(
+    String url, {
+    String mode = 'external_app',
+    bool open = true,
+    int? ms,
+  }) {
+    try {
+      ThorCore.instance?.externalSurface(url, mode: mode, open: open, ms: ms);
+    } on Object {
+      // Registrar jamás debe tumbar a la app.
     }
   }
 

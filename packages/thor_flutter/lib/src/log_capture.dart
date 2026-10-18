@@ -86,9 +86,39 @@ class LogCapture {
   static T silenced<T>(T Function() body) =>
       runZoned(body, zoneValues: {_echo: true});
 
+  /// Líneas recién grabadas con su origen y reloj, para no grabar dos veces
+  /// el mismo texto que llega por `print` Y por `debugPrint` (un
+  /// `debugPrint` de la app que termina en `print`, o un logger que
+  /// escribe por los dos).
+  static final List<({String line, String source, int ms})> _recent = [];
+  static final Stopwatch _clock = Stopwatch()..start();
+
+  /// Ventana en la que el mismo texto por la OTRA vía cuenta como duplicado.
+  @visibleForTesting
+  static Duration duplicateWindow = const Duration(milliseconds: 500);
+
+  /// Limpia el historial de duplicados (tests).
+  @visibleForTesting
+  static void resetDuplicates() => _recent.clear();
+
+  /// ¿[line] ya se grabó por otra vía hace nada? Un mismo origen repetido
+  /// NO es duplicado (el usuario imprimió dos veces).
+  static bool _isCrossSourceDuplicate(String line, String source) {
+    final now = _clock.elapsedMilliseconds;
+    final window = duplicateWindow.inMilliseconds;
+    _recent.removeWhere((r) => now - r.ms > window);
+    for (final r in _recent) {
+      if (r.line == line && r.source != source) return true;
+    }
+    if (_recent.length >= 16) _recent.removeAt(0);
+    _recent.add((line: line, source: source, ms: now));
+    return false;
+  }
+
   static void _record(String line, String source) {
     final core = ThorCore.instance;
     if (core == null || _recording) return;
+    if (_isCrossSourceDuplicate(line, source)) return;
     _recording = true;
     try {
       core.log(line, level: ThorLogLevel.infer(line), source: source);

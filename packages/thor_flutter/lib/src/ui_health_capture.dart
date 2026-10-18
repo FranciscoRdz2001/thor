@@ -24,6 +24,14 @@ import 'package:thor_flutter/src/visible_tree.dart';
 ///   con `source: ui_error` (cuenta como error, se agrupa en Issues); si no,
 ///   `environment {signal: ui_message, widget, text}`. Texto sin secretos
 ///   (y sin datos personales con la política estricta).
+/// - **Excepción cruda en pantalla** → `error` con `source: ui_error`, `type:
+///   RawExceptionText`: un `Text` visible cuyo contenido es una excepción
+///   (`(error) FormatException: Unexpected end of input`, `Null check
+///   operator…`): el usuario ve un mensaje de desarrollador porque la app
+///   puso `e.toString()` en la UI.
+/// - **Respuesta 200 vacía** → `error` con `source: empty_response`: un GET
+///   que contestó 200 sin cuerpo (la pantalla se queda vacía o revienta al
+///   decodificar). Una vez por ruta y con tope por sesión.
 /// - **Imágenes que no cargaron** → `error` con `source: image_error` y la
 ///   URL; incluso cuando la app puso un `errorBuilder` (que se traga la
 ///   excepción) porque la petición fallida se ve en la capa de red.
@@ -86,6 +94,8 @@ class UiHealthCapture {
     _recentImages.clear();
     _imageErrorsInWindow = 0;
     _imageWindowStart = 0;
+    _rawShown.clear();
+    _emptyReported.clear();
     _frames = 0;
     _scannedFrames = -1;
   }
@@ -163,10 +173,12 @@ class UiHealthCapture {
     _checkLoading(walk, screen, now);
     _checkBlank(walk, screen, now);
     _checkMessages(walk);
+    _checkRawErrors(walk);
 
     _watching = walk.loading ||
         (_blankSince != null && !_blankReported) ||
-        walk.messages.isNotEmpty;
+        walk.messages.isNotEmpty ||
+        walk.rawErrors.isNotEmpty;
   }
 
   static void _checkLoading(_Walk walk, String? screen, int now) {
@@ -232,6 +244,51 @@ class UiHealthCapture {
       ..addAll(now);
   }
 
+  /// Textos de excepción visibles en el último recorrido: se reporta uno al
+  /// aparecer; si se va y vuelve, otra vez.
+  static final Set<String> _rawShown = {};
+
+  static void _checkRawErrors(_Walk walk) {
+    final now = <String>{};
+    for (final text in walk.rawErrors) {
+      now.add(text);
+      if (_rawShown.contains(text)) continue;
+      final core = ThorCore.instance;
+      if (core == null) continue;
+      try {
+        final clean = core.redaction.scrub(text);
+        ErrorCapture.recordSignal(
+          source: 'ui_error',
+          type: 'RawExceptionText',
+          message: 'Texto de excepción visible en pantalla: «$clean»',
+          extra: {'text': clean, 'kind': 'raw_exception'},
+        );
+      } on Object {
+        // Observar jamás debe tumbar a la app.
+      }
+    }
+    _rawShown
+      ..clear()
+      ..addAll(now);
+  }
+
+  /// ¿[text] es una excepción cruda (lo que sale de `e.toString()`) y no
+  /// copy escrito para el usuario? Visible para tests.
+  @visibleForTesting
+  static bool looksLikeRawException(String text) =>
+      _rawException.hasMatch(text);
+
+  static final _rawException = RegExp(
+    r'^\s*\(error\)|'
+    r'\b[A-Z][A-Za-z]*(Exception|Error)\b(?!\w)|'
+    r'\bException:\s|'
+    "type '[^']+' is not a subtype of type|"
+    'Null check operator used on a null value|'
+    r"\bInstance of '|"
+    'Unexpected end of input|'
+    'Unhandled Exception',
+  );
+
   static void _recordPerf(Map<String, Object?> payload) {
     try {
       ThorCore.instance?.recorder.record(ThorEventKind.performance, payload);
@@ -290,10 +347,39 @@ class UiHealthCapture {
     caseSensitive: false,
   );
 
+  /// GET → 200 sin cuerpo ya reportados (host+ruta), y tope por sesión.
+  static final Set<String> _emptyReported = {};
+  static const _maxEmptyReports = 5;
+
+  static void _checkEmptyResponse(Map<String, Object?> p) {
+    if (p['method'] != 'GET' || p['statusCode'] != 200) return;
+    if (p['error'] != null || p.containsKey('responseBody')) return;
+    final bytes = p['responseBytes'];
+    if (bytes is int && bytes > 0) return;
+    final url = p['url'];
+    final uri = url is String ? Uri.tryParse(url) : null;
+    if (uri == null) return;
+    // Una imagen o un asset vacío ya sale por `image_error`/no importa aquí.
+    if (_imagePath.hasMatch(uri.path)) return;
+    if (_mimeOf(p['responseHeaders'])?.startsWith('image/') ?? false) return;
+    final key = '${uri.host}${uri.path}';
+    if (_emptyReported.length >= _maxEmptyReports ||
+        !_emptyReported.add(key)) {
+      return;
+    }
+    ErrorCapture.recordSignal(
+      source: 'empty_response',
+      type: 'EmptyResponse',
+      message: 'GET $key respondió 200 sin cuerpo',
+      extra: {'url': url, 'statusCode': 200},
+    );
+  }
+
   static void _onEvent(ThorEvent event) {
     if (event.kind != ThorEventKind.network) return;
     try {
       final p = event.payload;
+      _checkEmptyResponse(p);
       final status = p['statusCode'];
       final failed = p['error'] != null || (status is int && status >= 400);
       if (!failed) return;
@@ -448,6 +534,15 @@ class UiHealthCapture {
       }
       if (ro is RenderParagraph || ro is RenderImage || ro is RenderEditable) {
         walk.content++;
+        if (ro is RenderParagraph && walk.rawErrors.length < 3) {
+          final text = ro.text.toPlainText(includeSemanticsLabels: false);
+          if (text.length >= 8 &&
+              text.length <= 600 &&
+              looksLikeRawException(text) &&
+              !walk.rawErrors.contains(text.trim())) {
+            walk.rawErrors.add(text.trim());
+          }
+        }
       } else if (ro != null && _isPlatformView(ro)) {
         walk.platformView = true;
       }
@@ -525,6 +620,7 @@ class _Walk {
   bool platformView = false;
   int content = 0;
   final List<_Msg> messages = [];
+  final List<String> rawErrors = [];
 }
 
 class _Msg {

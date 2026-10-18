@@ -181,7 +181,20 @@ class ErrorCapture {
   }) {
     final core = ThorCore.instance;
     if (core == null) return;
+    // Un fallo de E/S sobre un archivo del propio SDK (journal, replay) no
+    // es un error de la app: se etiqueta `source: 'thor'` y se acota.
+    if (ThorCore.isInternalFileError(error)) {
+      core.recordInternalError('storage', error);
+      return;
+    }
     final text = error.toString();
+    // Un permiso rechazado deja su propio evento (`permission`): el escáner
+    // con la cámara denegada o el micrófono sin voz no dejaban nada más
+    // que la excepción posterior.
+    final hint = ThorCore.permissionKindFromText(text);
+    if (hint != null) {
+      core.permission(hint, after: 'denied', source: 'error');
+    }
     // El mensaje del error puede traer PII (p.ej. un Exception con el
     // email en el texto) — se trunca, y la política decide en el
     // reporte si se muestra completo. Los SECRETOS no esperan al

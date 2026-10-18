@@ -181,11 +181,17 @@ class ThorReplayStats {
 /// - `{"t":"user","ts":…,"id":…}` — usuario fijado/cambiado con
 ///   `Thor.setUser` (`id: null` = se limpió). Si ya se conocía al
 ///   arrancar, también va como `uid` en el meta.
-/// - `{"t":"gap","k":"background","ts":…,"ms":…}` — la app estuvo en
-///   segundo plano `ms` milisegundos reales. El reloj del replay (`ts`) se
-///   detiene mientras tanto: ese tiempo NO está en la duración del replay;
-///   el marcador existe para que el dashboard lo excluya de la duración de
-///   la sesión si la calcula con el reloj de pared.
+/// - `{"t":"gap","k":"background","ts":…,"ms":…,"from":…,"wall":…}` —
+///   la app estuvo en segundo plano `ms` milisegundos reales. El reloj del
+///   replay (`ts`) se detiene mientras tanto: ese tiempo NO está en la
+///   duración del replay; el marcador existe para que el dashboard lo
+///   excluya de la duración de la sesión si la calcula con el reloj de
+///   pared. `from`/`wall` son la
+///   hora real (UTC) de salida y de regreso: los `ts` no la cuentan.
+/// - `{"t":"end","reason":…,"ts":…,"bg":…}` — fin de la sesión: `reason`
+///   `clean`/`renewed` (la app la cerró) o `killed`/`crash` (la
+///   recuperación del siguiente arranque la derivó del archivo); `bg` =
+///   segundos en segundo plano. Sin este registro, la sesión sigue abierta.
 /// - `{"t":"ev",…}` — evento de Thor en versión ligera. `sc` = pantalla,
 ///   `sd` = su contexto fino si lo hay (`Thor.setScreenContext` o el
 ///   título del AppBar visible). En un tap, `p.l`
@@ -203,7 +209,7 @@ class ThorReplayStats {
 ///
 ///   Red (`k: "network"`), TODAS las peticiones (exitosas también; nunca
 ///   imágenes, fuentes ni assets estáticos):
-///   `{m, u, s, d, qh?, rh?, qb?, body?, qbt?, bt?, qn?, rn?, err?, at?}`
+///   `{m, u, s, d, qh?, rh?, qb?, body?, qbt?, bt?, qn?, rn?, x?, err?, at?}`
 ///   — método, URL completa con query, status, duración (ms), headers de
 ///   petición/respuesta, cuerpo de petición (`qb`) y de respuesta
 ///   (`body`): JSON decodificado si es JSON, texto si no; binarios solo
@@ -489,6 +495,17 @@ class ThorReplay {
               records.add(line);
             }
           }
+          // La sesión murió sin cerrar: queda dicho CÓMO (`killed` /
+          // `crash`) y cuánto estuvo en segundo plano, para que el dash no
+          // tenga que adivinarlo del último evento.
+          if (endMarker(records) case final end?) {
+            records.add(end);
+            try {
+              await entity.writeAsString('$end\n', mode: FileMode.append);
+            } on Object {
+              // Sin escribirlo solo se vuelve a derivar la próxima vez.
+            }
+          }
           final rest = acked == null
               ? records.skip(skip).toList()
               : [
@@ -519,6 +536,66 @@ class ThorReplay {
     } finally {
       _recovering = false;
     }
+  }
+
+  /// El registro de fin de una sesión que murió sin cerrar, derivado de su
+  /// propio archivo; `null` si ya lo trae (`stop` lo escribió) o está vacío.
+  ///
+  /// `reason`: `crash` si hubo un error fatal (zona/plataforma) o murió con
+  /// la app en primer plano; `killed` si la última señal de ciclo de vida
+  /// fue irse (`inactive`, `hidden`, `paused`, `detached`): la mató el
+  /// usuario o el SO. `bg` = segundos en segundo plano (suma de los `gap`).
+  @visibleForTesting
+  static String? endMarker(List<String> records) {
+    if (records.isEmpty) return null;
+    var lastTs = 0;
+    var lastQ = 0;
+    var gapMs = 0;
+    String? lastState;
+    var fatal = false;
+    for (final line in records) {
+      if (line.startsWith('{"t":"end"')) return null;
+      final q = _seqOf(line);
+      if (q != null && q > lastQ) lastQ = q;
+      if (!line.startsWith('{')) {
+        // Registros en arreglo: `["st", ts, …]` — el ts es el 2.º elemento.
+        final m = RegExp(r'^\["\w+",(\d+)').firstMatch(line);
+        if (m != null) lastTs = max(lastTs, int.parse(m[1]!));
+        continue;
+      }
+      final isGap = line.startsWith('{"t":"gap"');
+      final isEnv = line.contains('"k":"environment"') ||
+          line.contains('"signal":"lifecycle"');
+      final isFatalErr = line.contains('"k":"error"') &&
+          (line.contains('"src":"zone"') || line.contains('"src":"platform"'));
+      if (!isGap && !isEnv && !isFatalErr) {
+        final m = RegExp(r'"ts":(\d+)').firstMatch(line);
+        if (m != null) lastTs = max(lastTs, int.parse(m[1]!));
+        continue;
+      }
+      try {
+        final json = jsonDecode(line);
+        if (json is! Map) continue;
+        final ts = json['ts'];
+        if (ts is int) lastTs = max(lastTs, ts);
+        if (isGap && json['ms'] is int) gapMs += json['ms'] as int;
+        if (isFatalErr) fatal = true;
+        final p = json['p'];
+        if (isEnv && p is Map && p['signal'] == 'lifecycle') {
+          lastState = p['state'] as String?;
+        }
+      } on Object {
+        // Línea a medio escribir (el crash): se ignora.
+      }
+    }
+    final crashed = fatal || lastState == null || lastState == 'resumed';
+    return jsonEncode({
+      't': 'end',
+      'reason': crashed ? 'crash' : 'killed',
+      'ts': lastTs,
+      'bg': gapMs ~/ 1000,
+      'q': lastQ + 1,
+    });
   }
 
   /// La secuencia `q` de una línea del archivo: la clave `"q"` al final de
@@ -662,8 +739,15 @@ class ThorReplay {
 
   /// La app se fue a segundo plano: [_ts] se congela.
   void _enterBackground() {
-    _bgSinceMs ??= _clock.elapsedMilliseconds;
+    if (_bgSinceMs != null) return;
+    _bgSinceMs = _clock.elapsedMilliseconds;
+    _bgSinceWall = DateTime.now().toUtc();
   }
+
+  /// Hora real (UTC) en la que la app se fue a segundo plano: los `ts` no
+  /// cuentan ese tiempo, así que el `gap` lleva la hora absoluta para
+  /// alinear el replay con logs externos (backend, Xcode).
+  DateTime? _bgSinceWall;
 
   /// La app volvió: se descuenta lo que estuvo fuera y se deja un registro
   /// `{"t":"gap","k":"background","ts":…,"ms":…}` — `ts` es el punto del
@@ -675,7 +759,17 @@ class ThorReplay {
     final away = _clock.elapsedMilliseconds - since;
     _bgSinceMs = null;
     _bgTotalMs += away;
-    _writeJson({'t': 'gap', 'k': 'background', 'ts': _ts, 'ms': away});
+    final from = _bgSinceWall;
+    _bgSinceWall = null;
+    _writeJson({
+      't': 'gap',
+      'k': 'background',
+      'ts': _ts,
+      'ms': away,
+      // Hora real (UTC, ISO 8601) de salida y de regreso.
+      if (from != null) 'from': from.toIso8601String(),
+      'wall': DateTime.now().toUtc().toIso8601String(),
+    });
   }
 
   void _install() {
@@ -992,7 +1086,10 @@ class ThorReplay {
     });
     // Una sesión con fallo se sube entera aunque no estuviera en la
     // muestra: es justo la que hay que depurar.
-    final failed = event.kind == ThorEventKind.error ||
+    // Un error INTERNO del SDK (disco del journal) no es motivo para subir
+    // la sesión: no es la falla de la app que se quiere depurar.
+    final failed = (event.kind == ThorEventKind.error &&
+            p['internal'] != true) ||
         (event.kind == ThorEventKind.network && slim.containsKey('err'));
     if (!failed || !_config.uploadOnError) return;
     if (!_uploadEnabled) {
@@ -1153,6 +1250,8 @@ class ThorReplay {
       for (final k in const [
         'dir', 'distance', 'durationMs', 'start', 'end', 'axis', 'edge', //
         'obscure', 'keyboard', //
+        // Entrada de texto: solo tamaños y banderas, jamás el contenido.
+        'length', 'startLength', 'empty', 'edits', 'source', //
       ])
         if (p[k] != null) k: p[k],
     };
@@ -1225,7 +1324,7 @@ class ThorReplay {
       'kind': p['kind'],
       for (final k in const [
         'ms', 'until', 'slow', 'frozen', 'worstMs', 'frames', 'nodes', //
-        'interrupted', 'capped', 'startAt', //
+        'interrupted', 'capped', 'startAt', 'via', //
       ])
         if (p[k] != null) k: p[k],
       for (final k in const ['screen', 'from', 'name'])
@@ -1241,6 +1340,9 @@ class ThorReplay {
         'signal': p['signal'],
         for (final k in const [
           'state', 'value', 'online', 'widget', 'transition', //
+          // permission / external_surface / system_overlay / sesión.
+          'kind', 'before', 'after', 'prompt', 'host', 'mode', 'ms', //
+          'source', 'reason', 'session', 'backgroundMs', //
         ])
           if (p[k] != null)
             k: p[k] is String
@@ -1304,9 +1406,13 @@ class ThorReplay {
     if (_strict) return _slimNetworkStrict(p, url, failed, failure);
     // Diagnóstico: todo lo que retuvo la captura (nunca menos que lo
     // configurado).
-    final cap = _diagnostic
+    final base = _diagnostic
         ? max(_config.maxBodyBytes, ThorNetworkCapture.maxBodyBytes)
         : _config.maxBodyBytes;
+    // Una regla de endpoint (`ThorBodyRule.maxBytes`) sube el tope de ESA
+    // ruta; nunca por debajo del global.
+    final ruleCap = p['bodyCap'];
+    final cap = ruleCap is int ? max(base, ruleCap) : base;
     final qb =
         _clipBody(p['requestBody'], cap, omitted: p['requestBodyOmitted']);
     final body =
@@ -1330,6 +1436,9 @@ class ThorReplay {
       if (body.value != null) 'body': body.value,
       if (body.cut || p['responseBodyTruncated'] == true) 'bt': true,
       if (rn is int && rn > 0) 'rn': rn,
+      // Cifras extraídas por una regla de endpoint (`$..quantity` → n/sum…).
+      if (p['extracts'] case final Map<Object?, Object?> x when x.isNotEmpty)
+        'x': x,
       ...failure,
     };
   }
@@ -1492,13 +1601,15 @@ class ThorReplay {
         ..._unsavedBlocks.map((h) => _blocks[h]!),
         ..._pendingDisk,
       ];
-      _savedBlocks.addAll(_unsavedBlocks);
+      final unsaved = _unsavedBlocks;
       _pendingDisk.clear();
-      await file.writeAsString(
-        '${lines.join('\n')}\n',
-        mode: FileMode.append,
-        flush: true,
-      );
+      if (!_diskDisabled) {
+        // Un fallo de disco NO debe frenar la subida (los registros van
+        // también en `_pendingUpload`) ni salir como error de la app.
+        if (await _appendToDisk(file, '${lines.join('\n')}\n')) {
+          _savedBlocks.addAll(unsaved);
+        }
+      }
     } else {
       _pendingDisk.clear();
     }
@@ -1543,15 +1654,55 @@ class ThorReplay {
     }
   }
 
+  /// Fallos de disco seguidos y apagado del archivo del replay: tras
+  /// [_maxDiskFailures] el replay sigue en memoria y subiendo, pero deja de
+  /// escribir el archivo (y avisa UNA vez con un error `source: 'thor'`).
+  int _diskFailures = 0;
+  bool _diskDisabled = false;
+  static const _maxDiskFailures = 3;
+
+  /// Añade [text] al archivo; si el directorio desapareció (reinstalación
+  /// del build) lo recrea y reintenta una vez. `false` si no se pudo.
+  Future<bool> _appendToDisk(File file, String text) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (attempt > 0) await file.parent.create(recursive: true);
+        await file.writeAsString(text, mode: FileMode.append, flush: true);
+        _diskFailures = 0;
+        return true;
+      } on Object catch (e) {
+        if (attempt == 1) {
+          if (++_diskFailures >= _maxDiskFailures) {
+            _diskDisabled = true;
+            _pendingDisk.clear();
+            _core.recordInternalError('replay_disk', e);
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   final Set<String> _savedBlocks = {};
   Iterable<String> get _unsavedBlocks =>
       _blocks.keys.where((h) => !_savedBlocks.contains(h)).toList();
 
-  /// Apaga el replay (tests / logout).
-  static Future<void> stop() async {
+  /// Apaga el replay (tests / logout). Deja el registro de fin
+  /// `{"t":"end","reason":…,"ts":…,"bg":…}`: `reason` es `clean` (cierre
+  /// normal) o el motivo dado (`renewed`…); `bg` los segundos que la sesión
+  /// pasó en segundo plano. Una sesión sin ese registro murió (`killed` /
+  /// `crash`: lo anota la recuperación en el siguiente arranque).
+  static Future<void> stop({String reason = 'clean'}) async {
     final r = _instance;
     if (r == null) return;
     _instance = null;
+    r._writeJson({
+      't': 'end',
+      'reason': reason,
+      'ts': r._ts,
+      'bg': (r._bgTotalMs + _openBackgroundMs(r)) ~/ 1000,
+      'wall': DateTime.now().toUtc().toIso8601String(),
+    });
     r._idleTimer?.cancel();
     r._flushTimer?.cancel();
     r._configTimer?.cancel();
@@ -1581,10 +1732,16 @@ class ThorReplay {
     final config = r?._config;
     final directory = r?._directory;
     if (r != null) {
-      await stop().timeout(flushTimeout, onTimeout: () {});
+      await stop(reason: 'renewed').timeout(flushTimeout, onTimeout: () {});
     }
     await between();
     if (config != null) await start(config, directory: directory);
+  }
+
+  /// Milisegundos de un segundo plano que sigue abierto al cerrar.
+  static int _openBackgroundMs(ThorReplay r) {
+    final since = r._bgSinceMs;
+    return since == null ? 0 : r._clock.elapsedMilliseconds - since;
   }
 
   static num _round(double v) => (v * 10).round() / 10;

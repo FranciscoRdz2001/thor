@@ -12,10 +12,16 @@ import 'package:thor_flutter/src/performance_capture.dart';
 /// - `lifecycle {state, backgroundMs?}`: resumed | inactive | paused |
 ///   hidden | detached. Al volver (`resumed`) trae `backgroundMs`: lo que
 ///   estuvo en segundo plano, para excluirlo de la duración de la sesión.
-/// - `memory_pressure`: el sistema avisa que anda corto de memoria. Con
-///   `transition: true` si llegó en la ventana de ida a segundo plano
-///   (`inactive` → `paused`) o de regreso: iOS lo manda ahí casi siempre y no
-///   es presión real (un aviso real, en primer plano, no lleva la marca).
+/// - `memory_pressure`: el sistema avisa que anda corto de memoria. Solo se
+///   graba el aviso REAL: el que iOS manda en la ventana de ida a segundo
+///   plano (`inactive` → `paused`) o de regreso ocurre en cada transición y
+///   no es presión (20 de 20 pausas lo traían), así que se descarta y solo
+///   se cuenta en [suppressedMemoryPressure].
+/// - `system_overlay {ms}`: la app pasó `inactive` ≥ [overlayMin] y volvió a
+///   `resumed` SIN llegar a `paused`: algo del sistema se puso encima (el
+///   diálogo de un permiso, el centro de control, una hoja del sistema). Es
+///   la huella de un permiso pedido; el motivo exacto lo dice
+///   `Thor.permission` o el error de permiso inferido.
 /// - `locale {value}`: cambió el idioma del sistema (`es_MX`).
 /// - `text_scale {value}`: cambió la escala de texto (`1.3`).
 /// - `brightness {value}`: tema del sistema (`light` | `dark`). Dentro de la
@@ -47,6 +53,16 @@ class EnvironmentCapture with WidgetsBindingObserver {
   @visibleForTesting
   static Duration memoryPressureGap = const Duration(seconds: 5);
 
+  /// Mínimo de tiempo en `inactive` (sin pasar a segundo plano) para
+  /// considerarlo una superficie del sistema encima y no un parpadeo.
+  @visibleForTesting
+  static Duration overlayMin = const Duration(milliseconds: 400);
+
+  /// Avisos de memoria descartados por caer en la ventana de ida/vuelta a
+  /// segundo plano (ruido del cambio de estado, no presión real).
+  @visibleForTesting
+  static int suppressedMemoryPressure = 0;
+
   /// Instala el observador. Idempotente.
   static void install() {
     if (_instance != null) return;
@@ -70,6 +86,7 @@ class EnvironmentCapture with WidgetsBindingObserver {
   String? _locale;
   DateTime? _lastMemory;
   DateTime? _backgroundAt;
+  DateTime? _inactiveAt;
   AppLifecycleState? _lifecycle;
   DateTime? _transitionUntil;
   Timer? _reconcile;
@@ -106,12 +123,34 @@ class EnvironmentCapture with WidgetsBindingObserver {
     if (state == AppLifecycleState.inactive &&
         (_lifecycle == null || _lifecycle == AppLifecycleState.resumed)) {
       _transitionUntil = now().add(transitionWindow);
-    } else if (state == AppLifecycleState.resumed) {
+    } else if (state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      // También al llegar a `paused`/`hidden`: el aviso falso a veces
+      // llega justo después.
       _transitionUntil = now().add(transitionWindow);
     }
+    final previous = _lifecycle;
     _lifecycle = state;
     final background = state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden;
+    // `inactive` → `resumed` sin pasar por `paused`: una superficie del
+    // sistema (diálogo de permiso, centro de control) estuvo encima.
+    int? overlayMs;
+    if (state == AppLifecycleState.inactive &&
+        (previous == null || previous == AppLifecycleState.resumed)) {
+      // Solo el `inactive` de IR (desde primer plano); el de VOLVER
+      // (`paused` → `hidden` → `inactive` → `resumed`) no es una superficie.
+      _inactiveAt = DateTime.now();
+    } else if (background) {
+      _inactiveAt = null;
+    } else if (state == AppLifecycleState.resumed &&
+        previous == AppLifecycleState.inactive &&
+        _inactiveAt != null) {
+      final ms = DateTime.now().difference(_inactiveAt!).inMilliseconds;
+      _inactiveAt = null;
+      if (ms >= overlayMin.inMilliseconds) overlayMs = ms;
+    }
     // Cuánto estuvo fuera: marca de hueco para que la duración de la
     // sesión (y el dash) excluya el tiempo en segundo plano.
     int? away;
@@ -126,6 +165,13 @@ class EnvironmentCapture with WidgetsBindingObserver {
       'state': state.name,
       if (away != null) 'backgroundMs': away,
     });
+    if (overlayMs != null) {
+      _record({'signal': 'system_overlay', 'ms': overlayMs});
+    }
+    if (away != null) {
+      // Para la marca de fin de sesión (segundos en background).
+      ThorCore.instance?.backgroundMs += away;
+    }
     // El SO puede matar la app en segundo plano sin aviso: que el journal
     // diga en disco que se fue ahí (así NO se confunde con un crash).
     if (background) {
@@ -141,10 +187,11 @@ class EnvironmentCapture with WidgetsBindingObserver {
   @override
   void didHaveMemoryPressure() {
     final at = now();
-    // En la ventana de ida/vuelta a segundo plano va marcado y no gasta el
-    // espaciado: un aviso real justo después no debe perderse.
+    // En la ventana de ida/vuelta a segundo plano no se graba (iOS lo manda
+    // en cada transición); tampoco gasta el espaciado: un aviso real justo
+    // después no debe perderse.
     if (_inTransition) {
-      _record({'signal': 'memory_pressure', 'transition': true});
+      suppressedMemoryPressure++;
       return;
     }
     final last = _lastMemory;

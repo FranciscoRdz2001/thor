@@ -53,7 +53,7 @@ void main() {
     expect(event.payload['worstMs'], 900);
   });
 
-  test('un frame de 2 s o más emite freeze con pantalla y hora de inicio', () {
+  test('un frame de 1 s o más emite freeze con pantalla y hora de inicio', () {
     // La navegación ocurrió ANTES de que empezara el frame congelado.
     withClock(
       Clock.fixed(DateTime.now().toUtc().subtract(const Duration(minutes: 1))),
@@ -83,11 +83,58 @@ void main() {
     expect(jank.payload['frozen'], 1);
   });
 
-  test('1.9 s no es freeze (sí jank congelado)', () {
+  test('0.9 s no es freeze (sí jank congelado); 1.9 s sí', () {
+    PerformanceCapture.handleFrameTotals(
+      [const Duration(milliseconds: 900)],
+    );
+    expect(perf().map((e) => e.payload['kind']), ['jank']);
     PerformanceCapture.handleFrameTotals(
       [const Duration(milliseconds: 1900)],
     );
-    expect(perf().map((e) => e.payload['kind']), ['jank']);
+    expect(perf().map((e) => e.payload['kind']), ['jank', 'jank', 'freeze']);
+  });
+
+  group('freeze como problema (T-N11) y ANR sin watchdog (T-N08)', () {
+    List<ThorEvent> errors() =>
+        ThorCore.instance!.store.ofKind(ThorEventKind.error);
+
+    test('un freeze deja UN error source freeze con pantalla y ms', () {
+      ThorCore.instance!.setScreen('CartPage');
+      PerformanceCapture.handleFrameTotals([
+        const Duration(milliseconds: 1500),
+        const Duration(milliseconds: 4400),
+      ]);
+      final problem = errors().single.payload;
+      expect(problem['source'], 'freeze');
+      expect(problem['fatal'], false);
+      expect(problem['message'], contains('CartPage'));
+    });
+
+    test('varios freeze seguidos son un solo problema (no inunda)', () {
+      PerformanceCapture.handleFrameTotals([
+        const Duration(milliseconds: 1200),
+        const Duration(milliseconds: 1300),
+        const Duration(milliseconds: 1400),
+      ]);
+      expect(errors(), hasLength(1));
+    });
+
+    test('sin watchdog (debug) un frame de 2 s o más también es anr', () {
+      PerformanceCapture.handleFrameTotals([
+        const Duration(milliseconds: 4400),
+      ]);
+      final anr = perf().firstWhere((e) => e.payload['kind'] == 'anr');
+      expect(anr.payload['ms'], 4400);
+      expect(anr.payload['via'], 'frame');
+    });
+
+    test('un freeze de 1.2 s es problema pero no anr', () {
+      PerformanceCapture.handleFrameTotals([
+        const Duration(milliseconds: 1200),
+      ]);
+      expect(errors(), hasLength(1));
+      expect(perf().where((e) => e.payload['kind'] == 'anr'), isEmpty);
+    });
   });
 
   test('dos congeladas en un lote son dos eventos freeze', () {

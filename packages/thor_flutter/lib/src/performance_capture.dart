@@ -8,6 +8,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/anr_watchdog.dart';
 
 /// Captura de rendimiento con lo barato. Todo va en eventos
 /// `ThorEventKind.performance` con `payload.kind`:
@@ -28,7 +29,7 @@ import 'package:thor/thor.dart';
 ///   una carga completa). `capped: true` = pasó [maxLoad] sin quietud.
 ///
 /// - `freeze` `{ms, screen, startAt}`: UN frame que tardó [freezeThreshold]
-///   (2 s) o más, de los mismos timings del callback — funciona en debug,
+///   (1 s) o más, de los mismos timings del callback — funciona en debug,
 ///   profile y release, sin depender del watchdog (que en debug está
 ///   apagado y dejaba un freeze de 6.7 s como "0 ANR"). `startAt` (UTC) es
 ///   cuándo empezó el frame y `screen` la pantalla vigente en ese momento.
@@ -56,8 +57,21 @@ class PerformanceCapture {
   static const Duration frozenThreshold = Duration(milliseconds: 700);
 
   /// Un frame así de largo es una congelada (`freeze`): evento propio,
-  /// además de contar como `frozen` en el lote de jank.
-  static const Duration freezeThreshold = Duration(seconds: 2);
+  /// además de contar como `frozen` en el lote de jank, y un PROBLEMA
+  /// (`error` con `source: freeze`) que entra a los issues: el usuario vio
+  /// la app trabada y no hay excepción que lo diga.
+  static const Duration freezeThreshold = Duration(seconds: 1);
+
+  /// Un frame así de largo cuenta además como ANR cuando el watchdog (un
+  /// isolate aparte) NO está corriendo (debug, `anrThreshold: null`): sin
+  /// esto el panel de ANR marcaba 0 con la app congelada 4.4 s.
+  static const Duration anrFromFrameThreshold = Duration(seconds: 2);
+
+  /// Mínimo entre dos problemas `freeze` (un arranque pesado con varios
+  /// frames largos seguidos es UN problema, no cinco).
+  @visibleForTesting
+  static Duration freezeProblemGap = const Duration(seconds: 5);
+  static final Expando<DateTime> _lastFreezeProblem = Expando();
 
   /// Mínimo de frames lentos en un lote para considerarlo jank.
   static const int minSlowFramesPerBatch = 3;
@@ -160,6 +174,31 @@ class PerformanceCapture {
             core.recorder.currentScreen?.display,
         if (start != null) 'startAt': start.toIso8601String(),
       });
+      _freezeProblem(core, totals[i], start);
+    }
+  }
+
+  /// El freeze como problema de usuario + (sin watchdog) como ANR.
+  static void _freezeProblem(ThorCore core, Duration frame, DateTime? start) {
+    final screen = (start == null ? null : _screenAt(core, start)) ??
+        core.recorder.currentScreen?.display;
+    final now = clock.now();
+    final last = _lastFreezeProblem[core];
+    if (last == null || now.difference(last) >= freezeProblemGap) {
+      _lastFreezeProblem[core] = now;
+      core.problem(
+        'freeze',
+        'UiFreeze',
+        'La pantalla ${screen ?? 'actual'} se congeló '
+            '${frame.inMilliseconds} ms',
+        extra: {
+          'ms': frame.inMilliseconds,
+          if (screen != null) 'screen': screen,
+        },
+      );
+    }
+    if (!AnrWatchdog.running && frame >= anrFromFrameThreshold) {
+      AnrWatchdog.recordAnr(frame.inMilliseconds, via: 'frame');
     }
   }
 

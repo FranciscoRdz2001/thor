@@ -125,14 +125,16 @@ class AnrWatchdog {
     }
   }
 
-  /// Graba el evento. Pública para tests.
-  @visibleForTesting
-  static void recordAnr(int ms) {
+  /// Graba el evento. Pública para tests y para `PerformanceCapture` (un
+  /// frame congelado cuenta como ANR si el watchdog no está corriendo).
+  static void recordAnr(int ms, {String? via}) {
     final core = ThorCore.instance;
     if (core == null) return;
     core.recorder.record(ThorEventKind.performance, {
       'kind': 'anr',
       'ms': ms,
+      // `frame`: medido de un frame congelado, sin watchdog (debug).
+      if (via != null) 'via': via,
       'screen': core.recorder.currentScreen?.display,
       // Cuándo empezó el bloqueo (el evento se graba al TERMINAR).
       'startAt': clock.now().toUtc().subtract(Duration(milliseconds: ms))
