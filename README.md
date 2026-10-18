@@ -72,6 +72,14 @@ patrones que un humano tardaría en ver:
   hacer nada, con el título del AppBar visible (leído en el mismo
   recorrido de quietud): va como `sd` en cada `ev` del replay y
   `screen.detail` en el journal; lo puesto por la app gana sobre el título.
+  El `sd` NO se hereda: cambia con cada ruta, se quita si el AppBar que lo
+  daba desaparece y, si lo puso la app, al enfocar un campo de texto (la
+  consulta va a cambiar; la app lo vuelve a fijar al enviarla). Un diálogo
+  o una hoja se nombran `Dialog (DialogRoute<void>)` / `BottomSheet (…)` y
+  nunca `DisplayFeatureSubScreen`; la primera pantalla de la sesión
+  reemplazada en < 50 ms (`Onboarding` → `Splash`) no queda en la línea de
+  tiempo (`skipped` en la siguiente); un `push` de la pantalla que ya está
+  encima lleva `duplicate: true`.
 - **Identidad**: `Thor.setUser(id, props: {...})` deja el usuario en la
   línea de tiempo, el reporte y el replay, y el dashboard busca sesiones
   por él. El id se guarda tal cual (con `RedactionPolicy.strict()` uno con
@@ -88,7 +96,22 @@ patrones que un humano tardaría en ver:
   `import 'package:thor_flutter/log.dart';` (misma firma) o usa `Thor.log`.
   El narrador omite los de debug; el replay lleva solo warn/error
   (todos los niveles en modo diagnóstico, que enciende el dashboard).
-  `Thor.run(captureLogs: false)` lo apaga.
+  `Thor.run(captureLogs: false)` lo apaga. Niveles: `[PERF] …` es info
+  (warn solo con `result=error`/`(error)`); `… error 404` y `ERROR RESPONSE
+  [4xx]` son warn, solo un 5xx o un fallo real es error, y `ERROR RESPONSE
+  [200]` es info. El mismo texto por `print` Y `debugPrint` (< 500 ms) se
+  graba una vez.
+- **Entrada de texto**: `interaction` `text_focus` trae `length`/`empty` al
+  enfocar y, al salir de un campo que cambió, `text_edit {length,
+  startLength, empty, edits, source?}` (`source`: `typed` o
+  `pasted_or_scanned`, solo con texto de 50 caracteres o más). Jamás el
+  contenido; en una contraseña ni el largo.
+- **Cuerpos grandes por endpoint**: `Thor.run(bodyRules: [ThorBodyRule(
+  pathPattern: r'/CategoryTree', extracts: {'quantity': r'$..quantity'},
+  maxBytes: 65536)])` evalúa los JSONPath sobre el cuerpo COMPLETO (hasta
+  2 MB, ya sin secretos) y deja `extracts {nombre: {n, sum, min, max,
+  values}}` en el evento (`x` en el replay) sin retener el cuerpo; `maxBytes`
+  sube el tope de 8 KB solo para esa ruta.
 - **Logs estructurados**: `Thor.log('cobro', level: ThorLogLevel.warn,
   data: {'orderId': 42})` suma campos JSON libres al mensaje (replay
   `ev` `k: "log"`, `p: {m, lv, src, data?}`), sin secretos y con tope de
@@ -114,10 +137,14 @@ patrones que un humano tardaría en ver:
   - `jank {screen, slow, frozen, worstMs, frames, startAt?}`: por lote de
     frames y con la pantalla vigente al entregarse el lote (≤ ~1 s
     después); `startAt` (UTC) es el inicio del primer frame lento.
-  - `freeze {ms, screen, startAt}`: UN frame de 2 s o más, de los mismos
+  - `freeze {ms, screen, startAt}`: UN frame de 1 s o más, de los mismos
     timings (sin costo extra por frame), en debug, profile y release. La
     pantalla es la vigente cuando EMPEZÓ el frame. Es lo que ve una
-    congelada aunque el watchdog de ANR esté apagado.
+    congelada aunque el watchdog de ANR esté apagado. Además deja UN
+    problema (`error` con `source: freeze`, uno cada 5 s como máximo) que
+    entra a los issues, y, si el watchdog no corre (debug), un frame de 2 s
+    o más también sale como `anr {via: 'frame'}` para que el panel de ANR
+    no marque 0 con la app congelada.
   - `anr {ms, screen}`: la UI isolate bloqueada ≥ `anrThreshold` (2 s por
     defecto, `Thor.run(anrThreshold: ...)`, `null` lo apaga). Un isolate
     aparte hace ping cada ~umbral/4 (500 ms): sin trabajo por frame, un
@@ -157,11 +184,30 @@ patrones que un humano tardaría en ver:
   - `error` con `source: image_error {url, statusCode?}`: una imagen que no
     cargó, incluso con `errorBuilder` (que se traga la excepción: se ve en
     la capa de red). Misma URL: una vez cada 5 s.
+  - `error` con `source: ui_error`, `type: RawExceptionText`: un `Text`
+    visible que ES una excepción (`(error) FormatException: …`, `Null check
+    operator…`): la app puso `e.toString()` en la UI.
+  - `error` con `source: empty_response {url}`: un GET que contestó 200
+    sin cuerpo (una vez por ruta, hasta 5 por sesión).
+  - `error` con `source: dead_tap {widget, label, disabled}`: un botón de
+    acción tocado sin efecto — deshabilitado (`onPressed: null`) o tocado
+    dos veces en 4 s sin navegación, petición, estado ni mensaje entre
+    medias (1 s de espera; una vez por botón).
+  - `error` con `source: silent_logout`: `setUser(null)` sin un toque del
+    usuario en los 5 s previos (la sesión terminó sola).
+  - `error` con `source: freeze` (ver `freeze` abajo).
+  - `error` con `source: thor` e `internal: true`: un fallo del PROPIO SDK
+    (el journal o el archivo del replay no se pueden escribir). Se
+    recrea el directorio una vez; si persiste el journal se apaga y avisa
+    UNA vez; como máximo 3 por componente y sesión, y no hacen subir la
+    sesión del replay.
   - `layout_overflow` sigue viniendo de la aserción de Flutter, así que
     solo existe en debug/profile: en release el framework no avisa.
 - **Sesión en segundo plano.** El tiempo fuera de primer plano no es parte
   de la sesión: el reloj del replay se detiene al irse a `paused`/`hidden` y
-  al volver deja un registro `{"t":"gap","k":"background","ts","ms"}` (el
+  al volver deja un registro `{"t":"gap","k":"background","ts","ms","from",
+  "wall"}` (`from`/`wall`: hora real UTC de salida y regreso, porque los
+  `ts` no cuentan ese tiempo; el
   dash lo excluye de la duración). Si la app pasa
   `Thor.run(sessionTimeout: …)` (30 min por defecto, `null` lo apaga) o más
   en segundo plano, al volver la sesión se cierra (flush, marca de fin,
@@ -187,9 +233,24 @@ patrones que un humano tardaría en ver:
     escribe a disco (así una app matada ahí no se confunde con un crash).
   - `memory_pressure`: el sistema avisa que anda corto de memoria (espaciado
     a uno cada 5 s). Contexto oro cuando "la app se cerró sola". Los que
-    llegan en la ventana de ida/vuelta a segundo plano (2 s tras `inactive`
-    o `resumed`; iOS lo manda ahí casi siempre) llevan `transition: true`
-    y el narrador los omite.
+    llegan en la ventana de ida/vuelta a segundo plano (2 s tras `inactive`,
+    `paused`, `hidden` o `resumed`; iOS lo manda ahí en CADA transición) no
+    se graban: son ruido, no presión real.
+  - `permission {kind, before?, after?, prompt, source}`: un permiso del
+    sistema (cámara, micrófono, voz, ubicación…). La app lo reporta con
+    `Thor.permission('camera', after: 'denied', prompt: true)`; además
+    Thor lo infiere (`source: error`) de un error de permiso denegado.
+  - `external_surface {host, mode, state, ms?}`: la app cedió la pantalla a
+    Safari/Custom Tab/otra app/WebView (`Thor.externalSurface(url, mode:)`;
+    solo viaja el host). `system_overlay {ms}`: algo del sistema (el
+    diálogo de un permiso) estuvo encima ≥ 400 ms sin que la app pasara a
+    segundo plano.
+  - `previous_session {session, reason, state?, backgroundMs}`: al arrancar,
+    cómo terminó la sesión anterior (`clean`, `renewed`, `killed`: la mató
+    el usuario o el SO en segundo plano, o `crash`). El replay de esa
+    sesión recibe un registro `{"t":"end",…}` con el mismo motivo y los
+    segundos en segundo plano (`bg`); una sesión cerrada por la app lo
+    escribe al cerrar.
   - `locale {value}` (`es_MX`), `text_scale {value}` (`1.3`) y
     `brightness {value}` (`light | dark`): cambios a media sesión (el par
     dark/light del selector de apps en esa misma ventana no se graba; un
