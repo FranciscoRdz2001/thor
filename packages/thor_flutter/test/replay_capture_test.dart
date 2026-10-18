@@ -231,6 +231,63 @@ void main() {
     );
   });
 
+  testWidgets('ui health events reach the replay: error, message, perf',
+      (tester) async {
+    await tester.pumpWidget(app('Hola'));
+    await tester.runAsync(
+      () => ThorReplay.start(
+        const ThorReplayConfig(uploadOnError: false),
+        directory: dir,
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    final core = ThorCore.instance!;
+    core.recorder
+      ..record(ThorEventKind.error, {
+        'source': 'ui_error',
+        'type': 'UiError',
+        'message': 'SnackBar: «No se pudo cargar»',
+      })
+      ..record(ThorEventKind.environment, {
+        'signal': 'ui_message',
+        'widget': 'SnackBar',
+        'text': 'Producto agregado',
+      })
+      ..record(ThorEventKind.performance, {
+        'kind': 'blank_screen',
+        'screen': 'OrdersPage',
+        'ms': 5200,
+        'nodes': 1,
+      })
+      ..record(ThorEventKind.performance, {
+        'kind': 'stuck_loading',
+        'screen': 'OrdersPage',
+        'ms': 9000,
+      });
+    await tester.pump(const Duration(milliseconds: 100));
+    final evs = [
+      for (final r in await records(tester))
+        if (r is Map<String, Object?> && r['t'] == 'ev') r,
+    ];
+    Map<String, Object?> p(
+      String k,
+      bool Function(Map<String, Object?>) f,
+    ) =>
+        evs
+            .where((e) => e['k'] == k)
+            .map((e) => e['p']! as Map<String, Object?>)
+            .firstWhere(f);
+    expect(
+      p('error', (m) => m['src'] == 'ui_error')['msg'],
+      'SnackBar: «No se pudo cargar»',
+    );
+    final msg = p('environment', (m) => m['signal'] == 'ui_message');
+    expect(msg['widget'], 'SnackBar');
+    expect(msg['text'], 'Producto agregado');
+    expect(p('performance', (m) => m['kind'] == 'blank_screen')['nodes'], 1);
+    expect(p('performance', (m) => m['kind'] == 'stuck_loading')['ms'], 9000);
+  });
+
   testWidgets('going back to a seen state sends only a ref', (tester) async {
     await tester.pumpWidget(app('Uno'));
     await tester.runAsync(

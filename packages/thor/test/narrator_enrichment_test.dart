@@ -137,6 +137,39 @@ void main() {
     });
   });
 
+  group('narración de salud de UI', () {
+    test('stuck_loading, blank_screen, ui_message y ui_error', () {
+      final steps = ThorNarrator.narrate([
+        _e(0, ThorEventKind.navigation, {'action': 'push', 'to': 'A'}),
+        _e(1, ThorEventKind.performance, {
+          'kind': 'stuck_loading',
+          'screen': 'A',
+          'ms': 9000,
+        }),
+        _e(2, ThorEventKind.performance, {
+          'kind': 'blank_screen',
+          'screen': 'A',
+          'ms': 5200,
+        }),
+        _e(3, ThorEventKind.environment, {
+          'signal': 'ui_message',
+          'widget': 'SnackBar',
+          'text': 'Producto agregado',
+        }),
+        _e(4, ThorEventKind.error, {
+          'source': 'ui_error',
+          'type': 'UiError',
+          'message': 'AlertDialog: «No se pudo cargar»',
+        }),
+      ]);
+      expect(steps, contains('Cargando sin terminar 9000ms en A'));
+      expect(steps, contains('Pantalla casi vacía 5200ms en A'));
+      expect(steps, contains('SnackBar: «Producto agregado»'));
+      expect(steps, contains('AlertDialog: «No se pudo cargar»'));
+      expect(steps, isNot(contains('Jank')));
+    });
+  });
+
   group('Agregado slowFramesByScreen', () {
     test('acumula por pantalla y conserva el peor frame', () {
       ThorEvent perf(int seq, String screen, int slow, int worst) => ThorEvent(

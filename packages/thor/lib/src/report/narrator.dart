@@ -101,7 +101,14 @@ class ThorNarrator {
         case ThorEventKind.error:
           final type = event.payload['type'] ?? 'Error';
           final origin = event.origin;
-          nested(event, '✗ $type${origin == null ? '' : ' en $origin'}');
+          final source = event.payload['source'];
+          if (source == 'ui_error' || source == 'image_error') {
+            // Lo que el USUARIO vio (diálogo, snackbar, imagen rota): el
+            // mensaje es el dato, no el tipo.
+            nested(event, '✗ ${_short('${event.payload['message'] ?? type}')}');
+          } else {
+            nested(event, '✗ $type${origin == null ? '' : ' en $origin'}');
+          }
           final last = event.payload['lastAction'];
           if (last != null) detail('última acción: $last');
         case ThorEventKind.state:
@@ -130,6 +137,12 @@ class ThorNarrator {
               nested(event, '· Escala de texto: ${event.payload['value']}');
             case 'locale':
               nested(event, '· Idioma del sistema: ${event.payload['value']}');
+            case 'ui_message':
+              nested(
+                event,
+                '· ${event.payload['widget']}: '
+                '«${_short('${event.payload['text'] ?? ''}')}»',
+              );
             case 'connectivity':
               nested(
                 event,
@@ -177,6 +190,16 @@ class ThorNarrator {
               );
             case 'custom':
               nested(event, '· ${p['name']}: ${p['ms']}ms');
+            case 'stuck_loading':
+              nested(
+                event,
+                '⚠ Cargando sin terminar ${p['ms']}ms en ${p['screen']}',
+              );
+            case 'blank_screen':
+              nested(
+                event,
+                '⚠ Pantalla casi vacía ${p['ms']}ms en ${p['screen']}',
+              );
             default:
               final slow = p['slow'] ?? p['slowFrames'];
               final worst = p['worstMs'];

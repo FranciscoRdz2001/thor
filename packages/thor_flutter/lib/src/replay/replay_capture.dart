@@ -822,6 +822,8 @@ class ThorReplay {
       ThorEventKind.error => {
           'type': p['type'],
           'msg': switch (p['message']) {
+            final String m when p['source'] == 'ui_error' && _maskText =>
+              RedactionPolicy.scrubText(m),
             final String m => _scrub(m),
             final other => other,
           },
@@ -1066,7 +1068,7 @@ class ThorReplay {
     return {
       'kind': p['kind'],
       for (final k in const [
-        'ms', 'until', 'slow', 'frozen', 'worstMs', 'frames', //
+        'ms', 'until', 'slow', 'frozen', 'worstMs', 'frames', 'nodes', //
       ])
         if (p[k] != null) k: p[k],
       for (final k in const ['screen', 'from', 'name'])
@@ -1080,8 +1082,14 @@ class ThorReplay {
   /// escalar. El `user` no llega aquí (tiene registro propio).
   Map<String, Object?> _slimEnvironment(Map<String, Object?> p) => {
         'signal': p['signal'],
-        for (final k in const ['state', 'value', 'online'])
+        for (final k in const ['state', 'value', 'online', 'widget'])
           if (p[k] != null) k: p[k] is String ? _scrub(p[k]! as String) : p[k],
+        // Texto de un diálogo/snackbar de la app: copy escrito por la app,
+        // pero puede interpolar datos; con texto enmascarado pierde su forma.
+        if (p['text'] is String)
+          'text': _maskText
+              ? RedactionPolicy.scrubText(p['text']! as String)
+              : _scrub(p['text']! as String),
       };
 
   /// Campos estructurados (`data` de un log, `props` de un track): tal

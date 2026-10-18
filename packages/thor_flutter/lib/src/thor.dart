@@ -16,6 +16,7 @@ import 'package:thor_flutter/src/navigator_observer.dart';
 import 'package:thor_flutter/src/performance_capture.dart';
 import 'package:thor_flutter/src/screen_capture.dart';
 import 'package:thor_flutter/src/semantics_capture.dart';
+import 'package:thor_flutter/src/ui_health_capture.dart';
 
 /// Fachada Flutter de Thor — la API que ve la app.
 ///
@@ -254,6 +255,8 @@ class Thor {
         PerformanceCapture.install();
         // Tabs y PageView: pantallas que el Navigator no ve.
         ScreenCapture.install();
+        // Pantalla atascada o en blanco, diálogos de error, imágenes rotas.
+        UiHealthCapture.install();
         _watchLifecycle();
         if (anrThreshold != null) {
           unawaited(

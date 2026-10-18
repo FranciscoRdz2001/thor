@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart' show NetworkImageLoadException;
 import 'package:thor/thor.dart' hide originFromStack;
 import 'package:thor/thor.dart' as thor_core show originFromStack;
 import 'package:thor_flutter/src/log_capture.dart';
 import 'package:thor_flutter/src/screenshot_capture.dart';
+import 'package:thor_flutter/src/ui_health_capture.dart';
 
 /// Instala la captura de errores componiendo con los handlers existentes.
 ///
@@ -96,6 +98,11 @@ class ErrorCapture {
     }
   }
 
+  /// Entrada directa de un error de framework (tests).
+  @visibleForTesting
+  static void recordFlutterError(FlutterErrorDetails details) =>
+      _recordFlutterError(details);
+
   static void _recordFlutterError(FlutterErrorDetails details) {
     final exception = details.exception;
     // Los desbordes de layout son FlutterError con texto característico:
@@ -103,6 +110,22 @@ class ErrorCapture {
     // release nadie los ve.
     final isOverflow =
         exception is FlutterError && exception.message.contains('overflowed');
+    // Una imagen que no cargó: el síntoma es «falta una imagen», la causa
+    // es una URL. Se etiqueta aparte (con la URL) para que no se pierda
+    // entre los errores de framework.
+    if (!isOverflow && _isImageFailure(details)) {
+      UiHealthCapture.recordImageFailure(
+        exception is NetworkImageLoadException ? exception.uri : null,
+        statusCode: exception is NetworkImageLoadException
+            ? exception.statusCode
+            : null,
+        detail: exception is NetworkImageLoadException
+            ? null
+            : _truncate(exception.toString(), 200),
+        stack: details.stack,
+      );
+      return;
+    }
     _record(
       exception,
       details.stack,
@@ -114,6 +137,37 @@ class ErrorCapture {
     // captura en cuanto ocurre, no al generar el reporte (para entonces la
     // pantalla ya cambió).
     if (isOverflow) ThorScreenshot.captureInBackground();
+  }
+
+  static bool _isImageFailure(FlutterErrorDetails details) =>
+      details.exception is NetworkImageLoadException ||
+      details.library == 'image resource service';
+
+  /// Graba un problema que el usuario VIO (diálogo de error, imagen rota)
+  /// como evento `error` con [source] propio, reusando la misma envoltura
+  /// que un error real: mismo recorte, mismos secretos fuera y la
+  /// `lastAction`. No es una excepción: `fatal` siempre `false`.
+  static void recordSignal({
+    required String source,
+    required String type,
+    required String message,
+    Map<String, Object?> extra = const {},
+    StackTrace? stack,
+  }) {
+    final core = ThorCore.instance;
+    if (core == null) return;
+    core.recorder.record(
+      ThorEventKind.error,
+      {
+        'source': source,
+        'fatal': false,
+        'type': type,
+        'message': core.redaction.scrub(_truncate(message, 500)),
+        ...extra,
+        ..._lastActionOf(core),
+      },
+      origin: stack == null ? null : originFromStack(stack),
+    );
   }
 
   static void _record(

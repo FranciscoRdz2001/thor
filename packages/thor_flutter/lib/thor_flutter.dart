@@ -28,3 +28,4 @@ export 'src/screenshot_capture.dart'
     show ThorScreenshot, ThorScreenshotBoundary;
 export 'src/semantics_capture.dart' show SemanticsInteractionCapture;
 export 'src/thor.dart';
+export 'src/ui_health_capture.dart' show UiHealthCapture;

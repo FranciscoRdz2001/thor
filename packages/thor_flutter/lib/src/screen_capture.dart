@@ -4,6 +4,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/performance_capture.dart';
+import 'package:thor_flutter/src/ui_health_capture.dart';
 import 'package:thor_flutter/src/visible_tree.dart';
 
 /// Pantallas que el Navigator no ve: tabs (`IndexedStack`, `TabBarView`),
@@ -49,6 +50,7 @@ class ScreenCapture {
     if (!_installed) return;
     // Una lectura de reloj: de ahí sale screen_load (ver PerformanceCapture).
     PerformanceCapture.onFrame();
+    UiHealthCapture.onFrame();
     _timer?.cancel();
     _timer = Timer(idle, _onIdle);
   }
