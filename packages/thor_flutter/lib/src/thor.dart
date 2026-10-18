@@ -275,7 +275,10 @@ class Thor {
           ? '?'
           : view.platformDispatcher.textScaleFactor.toStringAsFixed(2),
       'brightness': PlatformDispatcher.instance.platformBrightness.name,
-      if (size != null)
+      // En Android el arranque (antes del primer frame) reporta 0x0: el
+      // tamaño físico aún no llegó del embedder. Un "0x0" en el reporte es
+      // peor que no decir nada, así que se omite si no es válido.
+      if (size != null && !size.isEmpty)
         'screen': '${size.width.round()}x${size.height.round()}',
       'dartVersion': Platform.version.split(' ').first,
     };
