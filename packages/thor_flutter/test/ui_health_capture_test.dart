@@ -226,6 +226,106 @@ void main() {
       expect(errors('ui_error'), hasLength(1), reason: 'sigue visible: 1 vez');
     });
 
+    testWidgets('un diálogo «Permite el micrófono» deja un permission denegado',
+        (tester) async {
+      ThorCore.instance!.setScreen('VoicePage');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => showDialog<void>(
+                  context: context,
+                  builder: (_) => const SimpleDialog(
+                    children: [
+                      Text(
+                        'No pudimos activar el micrófono. '
+                        'Permite el micrófono en Ajustes.',
+                      ),
+                    ],
+                  ),
+                ),
+                child: const Text('hablar'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('hablar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      UiHealthCapture.scan();
+      expect(errors('ui_error'), hasLength(1));
+      expect(env('permission'), [
+        {
+          'signal': 'permission',
+          'kind': 'microphone',
+          'after': 'denied',
+          'prompt': false,
+          'source': 'ui',
+        },
+      ]);
+    });
+
+    testWidgets('un Text en línea «Permiso de cámara denegado» deja permission '
+        'y ui_message; un rótulo de ajustes no', (tester) async {
+      ThorCore.instance!.setScreen('BarcodeScannerPage');
+      await tester.pumpWidget(
+        app(
+          const Column(
+            children: [
+              Text('Camera settings'),
+              Text('Permiso de cámara denegado. Actívalo en Ajustes.'),
+            ],
+          ),
+        ),
+      );
+      UiHealthCapture.scan();
+      UiHealthCapture.scan();
+      expect(env('permission'), hasLength(1));
+      expect(env('permission').single['kind'], 'camera');
+      expect(env('permission').single['source'], 'ui');
+      final msgs = env('ui_message');
+      expect(msgs, hasLength(1));
+      expect(msgs.single['text'], contains('Permiso de cámara denegado'));
+    });
+
+    test('«Espera la señal para hablar» es pasajero; un fallo no', () {
+      expect(
+        UiHealthCapture.looksTransient('Espera la señal para hablar'),
+        isTrue,
+      );
+      expect(UiHealthCapture.looksTransient('Escuchando...'), isTrue);
+      expect(
+        UiHealthCapture.looksTransient('Error al escuchar. Intenta de nuevo'),
+        isFalse,
+      );
+      expect(UiHealthCapture.looksTransient('Producto agregado'), isFalse);
+    });
+
+    testWidgets('un SnackBar de pista pasajera lleva transient',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Espera la señal para hablar')),
+                ),
+                child: const Text('hablar'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('hablar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      UiHealthCapture.scan();
+      expect(env('ui_message').single['transient'], true);
+    });
+
     testWidgets('un SnackBar neutral es ui_message, no error', (tester) async {
       ThorCore.instance!.setScreen('CartPage');
       await tester.pumpWidget(

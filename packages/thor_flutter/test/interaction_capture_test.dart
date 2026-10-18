@@ -187,6 +187,86 @@ void main() {
       expect(ev['dir'], 'right');
     });
 
+    testWidgets('edge_swipe sin pop no lleva popped; con pop a medio gesto sí',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(body: Center(child: Text('quieta'))),
+        ),
+      );
+      await tester.dragFrom(const Offset(4, 300), const Offset(200, 0));
+      await tester.pump();
+      expect(taps().single.payload.containsKey('popped'), isFalse);
+
+      final gesture = await tester.startGesture(const Offset(4, 300));
+      await gesture.moveBy(const Offset(120, 0));
+      // La pantalla retrocede mientras el dedo sigue abajo.
+      ThorCore.instance!.recorder.record(ThorEventKind.navigation, {
+        'action': 'pop',
+        'to': 'A',
+        'from': 'B',
+      });
+      await gesture.moveBy(const Offset(120, 0));
+      await gesture.up();
+      await tester.pump();
+      expect(taps().last.payload['gesture'], 'edge_swipe');
+      expect(taps().last.payload['popped'], true);
+    });
+
+    testWidgets('un toque en la barrera de un diálogo no es de la página de '
+        'atrás; dentro del diálogo sí', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => Column(
+                children: [
+                  ElevatedButton(
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => AlertDialog(
+                        content: const Text('Frutas'),
+                        actions: [
+                          TextButton(
+                            onPressed: () {},
+                            child: const Text('Cerrar'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    child: const Text('Abrir'),
+                  ),
+                  const Spacer(),
+                  const Text('Frutas Cítricas'),
+                  TextButton(
+                    onPressed: () {},
+                    child: const Text('Detrás'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Abrir'));
+      await tester.pumpAndSettle();
+      final before = taps().length;
+
+      // Dentro del diálogo: el botón del diálogo.
+      await tester.tap(find.text('Cerrar'), warnIfMissed: false);
+      await tester.pump();
+      expect(taps().last.payload['label'], 'Cerrar');
+
+      // En la barrera, justo sobre un botón de la página de atrás.
+      await tester.tapAt(tester.getCenter(find.text('Detrás')));
+      await tester.pump();
+      final last = taps().last.payload;
+      expect(taps().length, greaterThan(before + 1));
+      expect(last['widget'], 'ModalBarrier');
+      expect(last['label'], 'barrier');
+      expect(last['label'], isNot('Detrás'));
+    });
+
     testWidgets('long press: tap sostenido, no tap', (tester) async {
       await tester.pumpWidget(const MaterialApp(home: CobroPage()));
       await tester.longPress(find.text('Cobrar'));

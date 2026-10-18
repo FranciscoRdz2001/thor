@@ -95,6 +95,7 @@ class UiHealthCapture {
     _imageErrorsInWindow = 0;
     _imageWindowStart = 0;
     _rawShown.clear();
+    _permShown.clear();
     _emptyReported.clear();
     _frames = 0;
     _scannedFrames = -1;
@@ -174,11 +175,13 @@ class UiHealthCapture {
     _checkBlank(walk, screen, now);
     _checkMessages(walk);
     _checkRawErrors(walk);
+    _checkInlinePermission(walk);
 
     _watching = walk.loading ||
         (_blankSince != null && !_blankReported) ||
         walk.messages.isNotEmpty ||
-        walk.rawErrors.isNotEmpty;
+        walk.rawErrors.isNotEmpty ||
+        walk.permissionTexts.isNotEmpty;
   }
 
   static void _checkLoading(_Walk walk, String? screen, int now) {
@@ -302,6 +305,9 @@ class UiHealthCapture {
     if (core == null) return;
     try {
       final text = core.redaction.scrub(m.text);
+      // Un diálogo/snackbar que dice que falta un permiso («Permite el
+      // micrófono…») deja además su evento `permission`.
+      _notePermission(core, text);
       if (looksLikeError(text)) {
         ErrorCapture.recordSignal(
           source: 'ui_error',
@@ -314,11 +320,70 @@ class UiHealthCapture {
           'signal': 'ui_message',
           'widget': m.widget,
           'text': text,
+          // Una pista del sistema («Espera la señal para hablar») no es un
+          // problema de pantalla: el dash puede no listarla como tal.
+          if (looksTransient(text)) 'transient': true,
         });
       }
     } on Object {
       // Observar jamás debe tumbar a la app.
     }
+  }
+
+  static final _transientWords = RegExp(
+    'espera la se[ñn]al|escuchando|habla ahora|di algo|listening|speak now|'
+    'tap to speak|grabando|recording',
+    caseSensitive: false,
+  );
+
+  /// Si el texto es una pista pasajera del sistema (escuchando, grabando),
+  /// no un problema. Un texto que además parece fallo nunca es pasajero.
+  @visibleForTesting
+  static bool looksTransient(String text) =>
+      _transientWords.hasMatch(text) && !looksLikeError(text);
+
+  static final _deniedUi = RegExp(
+    'denegad|denied|rechaz|sin permiso|no (tienes|hay|se tiene) permiso|'
+    'permite |habilita |not allowed|enable |allow ',
+    caseSensitive: false,
+  );
+
+  /// Si [text] —un mensaje o un `Text` suelto en pantalla— dice que falta
+  /// un permiso de un recurso concreto: lo anota como `permission` denegado
+  /// con `source: ui`. Devuelve el recurso o `null`.
+  static String? _notePermission(ThorCore core, String text) {
+    if (!_deniedUi.hasMatch(text)) return null;
+    final kind = ThorCore.permissionKindFromText(text);
+    if (kind != null) core.permission(kind, after: 'denied', source: 'ui');
+    return kind;
+  }
+
+  /// Texto suelto que dice «Permiso de cámara denegado»: la app lo pinta
+  /// en línea (sin diálogo), así que solo el árbol lo ve.
+  static final Set<String> _permShown = {};
+
+  static void _checkInlinePermission(_Walk walk) {
+    final now = <String>{};
+    for (final text in walk.permissionTexts) {
+      now.add(text);
+      if (_permShown.contains(text)) continue;
+      final core = ThorCore.instance;
+      if (core == null) continue;
+      try {
+        final clean = core.redaction.scrub(text);
+        if (_notePermission(core, clean) == null) continue;
+        core.recorder.record(ThorEventKind.environment, {
+          'signal': 'ui_message',
+          'widget': 'Text',
+          'text': clean,
+        });
+      } on Object {
+        // Observar jamás debe tumbar a la app.
+      }
+    }
+    _permShown
+      ..clear()
+      ..addAll(now);
   }
 
   static final _errorWords = RegExp(
@@ -534,6 +599,17 @@ class UiHealthCapture {
       }
       if (ro is RenderParagraph || ro is RenderImage || ro is RenderEditable) {
         walk.content++;
+        if (ro is RenderParagraph && walk.permissionTexts.length < 3) {
+          final text =
+              ro.text.toPlainText(includeSemanticsLabels: false).trim();
+          if (text.length >= 8 &&
+              text.length <= 200 &&
+              _deniedUi.hasMatch(text) &&
+              ThorCore.permissionKindFromText(text) != null &&
+              !walk.permissionTexts.contains(text)) {
+            walk.permissionTexts.add(text);
+          }
+        }
         if (ro is RenderParagraph && walk.rawErrors.length < 3) {
           final text = ro.text.toPlainText(includeSemanticsLabels: false);
           if (text.length >= 8 &&
@@ -621,6 +697,7 @@ class _Walk {
   int content = 0;
   final List<_Msg> messages = [];
   final List<String> rawErrors = [];
+  final List<String> permissionTexts = [];
 }
 
 class _Msg {

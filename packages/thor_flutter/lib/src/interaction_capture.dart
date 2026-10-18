@@ -74,6 +74,12 @@ class InteractionCapture {
     'SegmentedButton', 'CupertinoButton',
   };
 
+  /// Superficies de un diálogo / hoja modal: un toque dentro de una de
+  /// ellas no es un toque a la barrera.
+  static const _surfaceTypes = {
+    'Material', 'PhysicalModel', 'PhysicalShape', 'CupertinoPopupSurface', //
+  };
+
   /// Interactivos primitivos: solo se reportan si ningún alto nivel
   /// contiene el punto (un `GestureDetector` escrito a mano sí cuenta).
   static const _primitiveTypes = {
@@ -127,6 +133,9 @@ class InteractionCapture {
   static bool _multiTouch = false;
   static DateTime? _lastScrollAt;
 
+  /// `seq` de la última navegación al bajar el dedo (ver `popped`).
+  static int? _downNavSeq;
+
   static void _onPointer(PointerEvent event) {
     if (event is PointerDownEvent) {
       if (_downPointer != null && _downPointer != event.pointer) {
@@ -137,6 +146,8 @@ class InteractionCapture {
       _downAt = event.position;
       _downTime = clock.now();
       _multiTouch = false;
+      _downNavSeq =
+          ThorCore.instance?.store.lastOfKind(ThorEventKind.navigation)?.seq;
       return;
     }
     if (event is PointerCancelEvent) {
@@ -263,10 +274,19 @@ class InteractionCapture {
       'end': [up.position.dx.round(), up.position.dy.round()],
     };
     if (isEdge) {
+      // El gesto se anota al SOLTAR, pero la pantalla ya pudo retroceder a
+      // mitad del arrastre (el pop queda antes en la línea de tiempo): se
+      // dice aquí para que nadie lo lea como «no regresó».
+      final nav = core.store.lastOfKind(ThorEventKind.navigation);
+      final navAction = nav?.payload['action'];
+      final popped = nav != null &&
+          nav.seq > (_downNavSeq ?? -1) &&
+          (navAction == 'pop' || navAction == 'remove');
       core.recorder.record(ThorEventKind.interaction, {
         'gesture': ThorGesture.edgeSwipe,
         'widget': 'screen_edge',
         'edge': edge,
+        if (popped) 'popped': true,
         ...base,
       });
       return;
@@ -438,6 +458,9 @@ class InteractionCapture {
     String? pageClass;
     Axis? scrollAxis;
     var thorUi = false;
+    // Barrera de un diálogo / hoja modal bajo el dedo (ver abajo).
+    var barrier = false;
+    var surfaceAboveBarrier = false;
 
     void visit(Element element, _Mark inherited) {
       final widget = element.widget;
@@ -448,6 +471,25 @@ class InteractionCapture {
         ThorReplayShowText() when inherited != _Mark.hidden => _Mark.show,
         _ => inherited,
       };
+      if (widget is ModalBarrier && widget.dismissible) {
+        // Un diálogo u hoja modal tapa la página de abajo: lo que esta
+        // tenía bajo el dedo NO es lo que se tocó. Quien venga después
+        // (lo de la propia hoja) sí cuenta. El `ModalBarrier` no tiene
+        // render propio: se mide con el primero de sus hijos.
+        final box = element.findRenderObject();
+        if (box is RenderBox && box.hasSize && box.attached) {
+          try {
+            if (box.paintBounds.contains(box.globalToLocal(position))) {
+              bestHighLevel = null;
+              bestPrimitive = null;
+              barrier = true;
+              surfaceAboveBarrier = false;
+            }
+          } on Object {
+            // Transform no invertible: la barrera no cuenta.
+          }
+        }
+      }
       final render = element.renderObject;
       if (render is RenderBox && render.hasSize && render.attached) {
         final Offset local;
@@ -461,6 +503,9 @@ class InteractionCapture {
         }
         if (mark == _Mark.thor) thorUi = true;
         final typeName = _stripGenerics(element.widget.runtimeType.toString());
+        if (barrier && _surfaceTypes.contains(typeName)) {
+          surfaceAboveBarrier = true;
+        }
         if (_highLevelTypes.contains(typeName)) {
           bestHighLevel = element; // el más profundo de su nivel gana
           highLevelMark = mark;
@@ -498,6 +543,17 @@ class InteractionCapture {
         hidden: mark == _Mark.hidden,
         thorUi: mark == _Mark.thor,
         disabled: _isDisabledButton(target.widget),
+      );
+    }
+    // El toque cayó en la barrera misma (fuera de la hoja/diálogo): es un
+    // descarte, no un toque a la página de atrás.
+    if (hit == null && barrier && !surfaceAboveBarrier) {
+      hit = _Hit(
+        widgetType: 'ModalBarrier',
+        label: 'barrier',
+        isTextInput: false,
+        pageClass: pageClass,
+        labelIsCopy: true,
       );
     }
     return _Probe(

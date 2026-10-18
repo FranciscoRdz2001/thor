@@ -226,9 +226,26 @@ class ThorReplayStats {
 /// sesión (1, 2, 3…) para que el servidor deduplique exacto —`(sid, q)`
 /// ya visto se descarta— cuando una subida se reintenta o la recuperación
 /// repite un tramo. En los mapas es la clave `"q"`; en los arreglos es el
-/// ÚLTIMO elemento (`st` 7 elementos, `ref` 5, `sc` 5, `p` 6). `meta` y
-/// `user` se escriben una vez por sesión (`user` solo si la identidad
-/// cambió); una copia reenviada lleva el mismo `q`.
+/// ÚLTIMO elemento. `meta` y `user` se escriben una vez por sesión (`user`
+/// solo si la identidad cambió; un segundo `meta` corrige el tamaño de la
+/// vista si cambió al pintar: el último manda); una copia reenviada lleva
+/// el mismo `q`.
+///
+/// Forma EXACTA de los registros en arreglo (contrato con el servidor;
+/// `replay_contract_test.dart` la comprueba), `q` siempre al final:
+///
+/// - `["st", ts, hash, offs, vps, refs, q]` — 7 elementos.
+/// - `["ref", ts, hash, offs, q]` — 5.
+/// - `["sc", ts, vp, offset, q]` — 5.
+/// - `["p", ts, kind, x, y, q]` — 6 (`kind`: `d`, `m`, `u`).
+/// - `["blk", hash, ops]` — 3, SIN `q` (se identifica por su hash).
+///
+/// Un servidor debe reconocer estos registros por su prefijo e ignorar el
+/// `q` final, no por la cantidad exacta de elementos.
+///
+/// Logs: solo `warn`/`error` llegan al servidor (más los `Thor.log` con
+/// `data` y todo en modo diagnóstico). Las líneas informativas de consola,
+/// como las `[PERF]`, se quedan en el journal del dispositivo a propósito.
 ///
 /// Subida en dos fases: se mandan los registros sin bloques; el servidor
 /// contesta `{"missing": [...]}` y solo esos bloques se mandan después.
@@ -296,6 +313,11 @@ class ThorReplay {
   String _scrub(String text) => _strict
       ? RedactionPolicy.scrubText(text)
       : RedactionPolicy.scrubSecrets(text);
+
+  /// Texto visible para el usuario o su última acción: enmascarado en
+  /// `maskText`/estricto; si no, solo secretos.
+  String _copyOf(String text) =>
+      _maskText ? RedactionPolicy.scrubText(text) : _scrub(text);
 
   /// Texto de la interfaz (copy de pantalla): con texto enmascarado pierde
   /// su forma de dato; si no, solo secretos.
@@ -524,6 +546,10 @@ class ThorReplay {
             // Sin red o servidor ocupado: se intenta en el siguiente
             // arranque. Rechazada (llave, tamaño): reintentar no sirve.
             if (up.sent is _Later) continue;
+            // Los registros llegaron pero faltaron bloques: borrar el archivo
+            // los perdería para siempre. Se reintenta en el siguiente
+            // arranque (el servidor deduplica los registros por `q`).
+            if (up.unsentBlocks.isNotEmpty) continue;
           }
         }
         for (final f in [entity, on, sent]) {
@@ -598,6 +624,29 @@ class ThorReplay {
     });
   }
 
+  /// Hashes de los bloques que citan los estados (`st`) de [records]: el
+  /// 6.º elemento es la lista de refs `[hash, vp, x, y]`. Una línea ilegible
+  /// se ignora.
+  @visibleForTesting
+  static Set<String> referencedHashes(Iterable<String> records) {
+    final hashes = <String>{};
+    for (final line in records) {
+      if (!line.startsWith('["st",')) continue;
+      try {
+        final json = jsonDecode(line);
+        if (json is! List || json.length < 6 || json[5] is! List) continue;
+        for (final ref in json[5] as List) {
+          if (ref is List && ref.isNotEmpty && ref[0] is String) {
+            hashes.add(ref[0] as String);
+          }
+        }
+      } on Object {
+        // A medio escribir.
+      }
+    }
+    return hashes;
+  }
+
   /// La secuencia `q` de una línea del archivo: la clave `"q"` al final de
   /// un mapa o el último elemento de un arreglo. `null` si no la trae
   /// (archivo de una versión anterior).
@@ -628,8 +677,14 @@ class ThorReplay {
     final first = await _post(http, endpoint, apiKey, sessionId, records);
     const none = <String>[];
     if (first.sent is! _Ok) return (sent: first.sent, unsentBlocks: none);
+    // Una respuesta SIN `missing` no dice "no falta nada": dice que el
+    // servidor no contestó la segunda fase (versión vieja, proxy, respuesta
+    // vacía). Con estados en el lote se mandan todos los bloques que citan:
+    // el servidor los guarda por contenido, así que repetir es barato y
+    // perder un bloque no tiene remedio.
+    final wanted = first.missing ?? referencedHashes(records);
     final lines = [
-      for (final h in first.missing)
+      for (final h in wanted)
         if (blocks[h] case final line?) line,
     ];
     if (lines.isEmpty) return (sent: first.sent, unsentBlocks: none);
@@ -646,7 +701,7 @@ class ThorReplay {
   }
 
   /// Un POST gzip NDJSON: qué pasó y qué bloques pide el servidor.
-  static Future<({_Sent sent, List<String> missing})> _post(
+  static Future<({_Sent sent, List<String>? missing})> _post(
     HttpClient http,
     Uri endpoint,
     String? apiKey,
@@ -681,9 +736,10 @@ class ThorReplay {
       final json = jsonDecode(text);
       return (
         sent: _Ok(body.length),
+        // `null` = el servidor no habló de bloques (ver [_upload]).
         missing: json is Map && json['missing'] is List
             ? (json['missing'] as List).cast<String>()
-            : const <String>[],
+            : null,
       );
     } on Object {
       return (sent: _Later(null), missing: const <String>[]);
@@ -774,8 +830,36 @@ class ThorReplay {
 
   void _install() {
     _clock.start();
+    _writeMeta();
+    _lastUserSig = jsonEncode([_core.userId, _core.userProps]);
+    SchedulerBinding.instance.addPersistentFrameCallback(_onFrame);
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_onPointer);
+    // Lo que el núcleo ya anotó antes de que el replay arrancara (cómo
+    // terminó la sesión anterior) sería invisible para el servidor: vive
+    // solo en el journal del dispositivo.
+    for (final event in _core.store.ofKind(ThorEventKind.environment)) {
+      if (event.payload['signal'] == 'previous_session') _onEvent(event);
+    }
+    _unsubscribe = _core.recorder.addListener(_onEvent);
+    _flushTimer = Timer.periodic(_config.saveEvery, (_) {
+      final due = _ts - _lastUploadAt >= _config.uploadEvery.inMilliseconds;
+      unawaited(flush(upload: due));
+    });
+    WidgetsBinding.instance.addObserver(_lifecycle);
+    _scheduleSnapshot();
+  }
+
+  /// Tamaño (px lógicos) que declara el `meta` vigente de la sesión.
+  Size? _metaSize;
+
+  /// Escribe el registro `meta` con el tamaño de la vista de ESTE momento.
+  /// Se llama al arrancar y, si la vista cambió de forma (la app arranca
+  /// con la orientación del sistema a medias y luego gira), una vez más al
+  /// primer snapshot: el último `meta` manda.
+  void _writeMeta() {
     final view = WidgetsBinding.instance.platformDispatcher.views.first;
     final size = view.physicalSize / view.devicePixelRatio;
+    _metaSize = size;
     _writeJson({
       't': 'meta',
       'v': 2,
@@ -793,16 +877,23 @@ class ThorReplay {
       if (_core.userId != null) 'uid': _core.userId,
       if (_core.userProps != null) 'uprops': _core.userProps,
     });
-    _lastUserSig = jsonEncode([_core.userId, _core.userProps]);
-    SchedulerBinding.instance.addPersistentFrameCallback(_onFrame);
-    GestureBinding.instance.pointerRouter.addGlobalRoute(_onPointer);
-    _unsubscribe = _core.recorder.addListener(_onEvent);
-    _flushTimer = Timer.periodic(_config.saveEvery, (_) {
-      final due = _ts - _lastUploadAt >= _config.uploadEvery.inMilliseconds;
-      unawaited(flush(upload: due));
-    });
-    WidgetsBinding.instance.addObserver(_lifecycle);
-    _scheduleSnapshot();
+  }
+
+  bool _metaChecked = false;
+
+  /// Primer snapshot real: si el tamaño de la vista ya no es el del `meta`
+  /// (p. ej. 874×402 al arrancar y 402×874 al pintar), se corrige.
+  void _checkMetaSize() {
+    if (_metaChecked) return;
+    _metaChecked = true;
+    final view = WidgetsBinding.instance.platformDispatcher.views.first;
+    final size = view.physicalSize / view.devicePixelRatio;
+    final was = _metaSize;
+    if (was == null) return;
+    if ((size.width - was.width).abs() > 1 ||
+        (size.height - was.height).abs() > 1) {
+      _writeMeta();
+    }
   }
 
   /// `meta.device`: lo que el adaptador supo del dispositivo sin plugins
@@ -869,6 +960,7 @@ class ThorReplay {
       return;
     }
     _snapWatch.stop();
+    _checkMetaSize();
     _recordCost(_snapWatch.elapsedMicroseconds, wire.ops.length, refs.length);
     _viewports = wire.viewports;
     for (final MapEntry(:key, :value) in wire.offsets.entries) {
@@ -1044,6 +1136,8 @@ class ThorReplay {
       ThorEventKind.navigation => {
           'a': p['action'],
           'to': p['to'] is String ? _scrub(p['to']! as String) : p['to'],
+          // Sin `from`, "pop SearchScreen → SearchScreen" es ambiguo.
+          if (p['from'] is String) 'from': _scrub(p['from']! as String),
         },
       ThorEventKind.interaction => _slimInteraction(p),
       // El mensaje es el toString de la excepción: puede interpolar un
@@ -1066,6 +1160,11 @@ class ThorReplay {
           if (p['info'] is String) 'info': _scrub(p['info']! as String),
           if (p['widget'] is String) 'widget': p['widget'],
           if (p['file'] is String) 'file': p['file'],
+          // Lo que el usuario vio (texto del diálogo / excepción cruda) y
+          // lo último que tocó: con la misma limpieza que el mensaje.
+          if (p['text'] is String) 'text': _copyOf(p['text']! as String),
+          if (p['lastAction'] is String)
+            'lastAction': _copyOf(p['lastAction']! as String),
         },
       ThorEventKind.network => _slimNetwork(p, event.origin),
       ThorEventKind.state => _slimState(p),
@@ -1249,6 +1348,7 @@ class ThorReplay {
     final drag = <String, Object?>{
       for (final k in const [
         'dir', 'distance', 'durationMs', 'start', 'end', 'axis', 'edge', //
+        'popped', //
         'obscure', 'keyboard', //
         // Entrada de texto: solo tamaños y banderas, jamás el contenido.
         'length', 'startLength', 'empty', 'edits', 'source', //
@@ -1342,7 +1442,7 @@ class ThorReplay {
           'state', 'value', 'online', 'widget', 'transition', //
           // permission / external_surface / system_overlay / sesión.
           'kind', 'before', 'after', 'prompt', 'host', 'mode', 'ms', //
-          'source', 'reason', 'session', 'backgroundMs', //
+          'source', 'reason', 'session', 'backgroundMs', 'transient', //
         ])
           if (p[k] != null)
             k: p[k] is String
@@ -1535,6 +1635,23 @@ class ThorReplay {
   void _line(String line, int q) {
     _pendingDisk.add(line);
     if (_config.endpoint != null) _pendingUpload.add((q: q, line: line));
+    // En segundo plano no hay "siguiente ciclo" garantizado: el sistema
+    // puede matar la app justo después. Lo escrito tras el flush de `paused`
+    // (otros observadores, el último evento) sale en un flush corto.
+    if (_bgSinceMs != null) _flushSoon();
+  }
+
+  /// Espera del flush corto en segundo plano (ver [_flushSoon]).
+  @visibleForTesting
+  static Duration backgroundFlushDelay = const Duration(milliseconds: 300);
+  Timer? _bgFlushTimer;
+
+  void _flushSoon() {
+    if (_bgFlushTimer != null || _instance != this) return;
+    _bgFlushTimer = Timer(backgroundFlushDelay, () {
+      _bgFlushTimer = null;
+      if (_instance == this) unawaited(flush());
+    });
   }
 
   late final _lifecycle = _ReplayLifecycle(this);
@@ -1707,6 +1824,7 @@ class ThorReplay {
     r._flushTimer?.cancel();
     r._configTimer?.cancel();
     r._errorFlushTimer?.cancel();
+    r._bgFlushTimer?.cancel();
     r._unsubscribe?.call();
     WidgetsBinding.instance.removeObserver(r._lifecycle);
     GestureBinding.instance.pointerRouter.removeGlobalRoute(r._onPointer);
@@ -1787,6 +1905,9 @@ class _ReplayLifecycle with WidgetsBindingObserver {
       case AppLifecycleState.hidden:
         replay._enterBackground();
         unawaited(replay.flush());
+        // Lo que otros observadores escriban tras este (el propio evento
+        // `paused`) no espera a un relanzamiento.
+        replay._flushSoon();
       case AppLifecycleState.resumed:
         replay._leaveBackground();
       case AppLifecycleState.inactive:

@@ -204,6 +204,22 @@ void main() {
       });
     });
 
+    test('permissionKindFromText: copy que pide el permiso sin «denegado»', () {
+      expect(
+        ThorCore.permissionKindFromText(
+          'No pudimos activar el micrófono. Permite el micrófono en Ajustes',
+        ),
+        'microphone',
+      );
+      expect(
+        ThorCore.permissionKindFromText('Allow camera access in Settings'),
+        'camera',
+      );
+      expect(ThorCore.permissionKindFromText('Permite la cámara'), 'camera');
+      // Sin recurso concreto no es un permiso.
+      expect(ThorCore.permissionKindFromText('Permite continuar'), isNull);
+    });
+
     test('permissionKindFromText: exige permiso Y recurso', () {
       expect(
         ThorCore.permissionKindFromText('CameraAccessDenied'),

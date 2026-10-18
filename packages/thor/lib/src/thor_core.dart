@@ -601,7 +601,13 @@ class ThorCore {
         t.contains('not authorized') ||
         t.contains('unauthorized') ||
         t.contains('accessdenied') ||
-        t.contains('access denied');
+        t.contains('access denied') ||
+        // Copy que pide el permiso sin decir "denegado": «Permite el
+        // micrófono en Ajustes», «Allow camera access in Settings».
+        t.contains('permite ') ||
+        t.contains('ajustes') ||
+        t.contains('allow ') ||
+        t.contains('settings');
     if (!denied) return null;
     if (t.contains('camera') || t.contains('cámara') || t.contains('camara')) {
       return 'camera';
