@@ -33,10 +33,12 @@ class ThorCrashPrompt {
     if (_shown) return;
     final recovered = ThorCore.instance?.recoveredPrevious;
     if (recovered == null || !recovered.crashed) return;
-    _shown = true;
 
+    // Sin overlay aún (el Navigator no terminó de montarse) no se gasta el
+    // único intento: el siguiente push lo vuelve a probar.
     final overlay = navigator.overlay;
     if (overlay == null) return;
+    _shown = true;
     OverlayEntry? entry;
     Timer? timer;
     void dismiss() {

@@ -44,6 +44,12 @@ class ScreenCapture {
   /// Título del AppBar visible hallado por el último [detect].
   static String? _title;
 
+  /// Cambios de título ya anotados en la pantalla vigente, y el tope: un
+  /// título que cambia solo (contador del carrito, cuenta regresiva) no
+  /// debe llenar la línea de tiempo de `screen_context`.
+  static int _titleSyncs = 0;
+  static const int _maxTitleSyncs = 5;
+
   /// Tras un toque, cuánto esperar antes de mirar el árbol (el frame de
   /// la pantalla nueva).
   @visibleForTesting
@@ -68,6 +74,7 @@ class ScreenCapture {
     _installed = false;
     _lastReported = null;
     _autoDetail = null;
+    _titleSyncs = 0;
     _timer?.cancel();
     _tapTimer?.cancel();
     _tapTimer = null;
@@ -130,6 +137,7 @@ class ScreenCapture {
     }
     _lastReported = screen;
     _autoDetail = title;
+    _titleSyncs = 0;
     core.recorder.currentScreen = ScreenId(
       routeName: current?.routeName,
       widgetClass: screen,
@@ -151,6 +159,8 @@ class ScreenCapture {
     final current = core.recorder.currentScreen;
     if (current == null || current.detail == title) return;
     if (current.detail != null && current.detail != _autoDetail) return;
+    if (_titleSyncs >= _maxTitleSyncs) return;
+    _titleSyncs++;
     _autoDetail = title;
     core.recorder.currentScreen = current.withDetail(title);
     core.recorder.record(ThorEventKind.environment, {

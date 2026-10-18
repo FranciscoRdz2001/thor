@@ -204,9 +204,6 @@ class InteractionCapture {
     Offset down,
     Duration held,
   ) {
-    final probe = _probe(down);
-    if (probe.thorUi) return;
-    _retroCorrect(core, probe.pageClass);
     final delta = up.position - down;
     final horizontal = delta.dx.abs() >= delta.dy.abs();
     final dir = horizontal
@@ -225,6 +222,20 @@ class InteractionCapture {
         horizontal &&
         delta.dx.abs() >= _edgeMinTravel &&
         delta.dx.abs() > delta.dy.abs() * 2;
+
+    // Vía rápida: un arrastre pegado al anterior (una lista larga = muchos
+    // arrastres seguidos) ya es parte de la ráfaga de scroll ya anotada.
+    // Evita recorrer el árbol entero en cada soltada del dedo.
+    final lastScroll = _lastScrollAt;
+    if (!isEdge &&
+        lastScroll != null &&
+        clock.now().difference(lastScroll) < _scrollCoalesce) {
+      _lastScrollAt = clock.now();
+      return;
+    }
+    final probe = _probe(down);
+    if (probe.thorUi) return;
+    _retroCorrect(core, probe.pageClass);
 
     final base = <String, Object?>{
       'dir': dir,

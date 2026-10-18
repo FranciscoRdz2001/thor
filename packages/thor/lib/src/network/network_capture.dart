@@ -66,9 +66,13 @@ class ThorNetworkCapture {
   /// que la app nunca consume no debe bloquear la medición para siempre.
   static int get inFlight {
     if (_open.isEmpty) return 0;
+    _pruneOpen();
+    return _open.length;
+  }
+
+  static void _pruneOpen() {
     final cutoff = clock.now().subtract(inFlightMaxAge);
     _open.removeWhere((_, startedAt) => startedAt.isBefore(cutoff));
-    return _open.length;
   }
 
   /// Ver [inFlight].
@@ -326,6 +330,9 @@ class _SpyRequest implements HttpClientRequest {
   @override
   Future<HttpClientResponse> close() async {
     ThorNetworkCapture._open[this] = clock.now();
+    // Respuestas que la app nunca consume no se quedan retenidas (con sus
+    // cuerpos) hasta la próxima medición de carga.
+    if (ThorNetworkCapture._open.length > 64) ThorNetworkCapture._pruneOpen();
     try {
       final response = await inner.close();
       return _spyResponse(response);

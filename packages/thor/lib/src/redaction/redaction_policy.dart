@@ -278,8 +278,10 @@ class RedactionPolicy {
     'private_?key|jwt|bearer|credential|otp_?code|'
     // Códigos de pago: el QR/token que el cajero escanea para cobrar es
     // dinero en un string (visto: `monedero/pagar` → `data`).
-    r'^qr(_?code|_?token|_?data|_?pago)?$|qr_?(code|token|pago)|'
-    'codigo_?(pago|qr|cobro)|payment_?(code|token|qr)|pago_?(code|token|qr)|'
+    r'^qr(_?code|_?token|_?data|_?pago|_?payment)?$|'
+    'qr_?(code|token|pago|payment)|'
+    'codigo_?(de_?)?(pago|qr|cobro)|payment_?(code|token|qr)|'
+    'code_?payment|pago_?(code|token|qr)|'
     'one_?time_?(code|pass)',
   );
 

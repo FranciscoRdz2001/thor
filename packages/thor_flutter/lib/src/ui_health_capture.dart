@@ -84,6 +84,8 @@ class UiHealthCapture {
     _resetEpisodes();
     _shown.clear();
     _recentImages.clear();
+    _imageErrorsInWindow = 0;
+    _imageWindowStart = 0;
     _frames = 0;
     _scannedFrames = -1;
   }
@@ -322,6 +324,14 @@ class UiHealthCapture {
     return null;
   }
 
+  static int _imageErrorsInWindow = 0;
+  static int _imageWindowStart = 0;
+
+  /// Tope de imágenes rotas distintas grabadas por ventana de
+  /// [_imageDedupeMs]: una cuadrícula con el CDN caído no debe volverse
+  /// cientos de errores.
+  static const _maxImageErrorsPerWindow = 10;
+
   /// Una imagen no cargó. Se llama desde la excepción de imagen
   /// (`ErrorCapture`) y desde la capa de red; la misma URL se graba una
   /// sola vez en [_imageDedupeMs].
@@ -335,10 +345,16 @@ class UiHealthCapture {
     if (core == null) return;
     final key = uri == null ? null : '${uri.host}${uri.path}';
     final now = nowMs();
+    if (now - _imageWindowStart >= _imageDedupeMs) {
+      _imageWindowStart = now;
+      _imageErrorsInWindow = 0;
+    }
+    if (_imageErrorsInWindow >= _maxImageErrorsPerWindow) return;
     if (key != null) {
       final last = _recentImages[key];
       if (last != null && now - last < _imageDedupeMs) return;
       _recentImages[key] = now;
+      _imageErrorsInWindow++;
       if (_recentImages.length > 50) {
         _recentImages.removeWhere((_, at) => now - at >= _imageDedupeMs);
       }
@@ -475,7 +491,10 @@ class UiHealthCapture {
     return name.contains('PlatformView') ||
         name.contains('UiKitView') ||
         name.contains('AndroidView') ||
-        name.contains('AppKitView');
+        name.contains('AppKitView') ||
+        // Cámara / escáner (`Texture`): el contenido vive en la GPU, no en
+        // el árbol de Flutter; con solo un título encima no es «en blanco».
+        name.contains('TextureBox');
   }
 
   /// Los textos del mensaje (título y cuerpo; sin las etiquetas de sus

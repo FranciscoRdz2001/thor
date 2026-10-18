@@ -342,6 +342,16 @@ void main() {
       expect(errors('image_error'), hasLength(2));
     });
 
+    test('una cuadrícula con el CDN caído no genera cientos de errores', () {
+      for (var i = 0; i < 100; i++) {
+        network('https://cdn.x.com/p/$i.png', status: 503);
+      }
+      expect(errors('image_error').length, lessThanOrEqualTo(10));
+      fakeMs += 6000;
+      network('https://cdn.x.com/p/otra.png', status: 503);
+      expect(errors('image_error').length, lessThanOrEqualTo(11));
+    });
+
     test('NetworkImageLoadException de Flutter: image_error, no flutter', () {
       final uri = Uri.parse('https://cdn.x.com/banner.jpg');
       ErrorCapture.recordFlutterError(

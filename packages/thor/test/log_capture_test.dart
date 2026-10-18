@@ -246,6 +246,21 @@ void main() {
       );
     });
 
+    test('infer: el código HTTP real manda sobre un «412 ms» suelto', () {
+      expect(
+        ThorLogLevel.infer('ERROR RESPONSE [500] /x tardó 412 ms'),
+        ThorLogLevel.error,
+      );
+      expect(
+        ThorLogLevel.infer('ERROR RESPONSE [404] /x tardó 120 ms'),
+        ThorLogLevel.warn,
+      );
+      expect(
+        ThorLogLevel.infer('ERROR RESPONSE statusCode: 502 en 450 ms'),
+        ThorLogLevel.error,
+      );
+    });
+
     test('shim log(): mapea niveles y sin Thor no hace nada', () async {
       // Sin init: no lanza ni graba.
       thor_log.log('antes de Thor');

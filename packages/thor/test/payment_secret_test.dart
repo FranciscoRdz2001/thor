@@ -23,6 +23,9 @@ void main() {
         'codigoQr',
         'paymentCode',
         'payment_token',
+        'codigoDePago',
+        'qrPayment',
+        'codePayment',
         'otp',
         'cvv',
       ]) {

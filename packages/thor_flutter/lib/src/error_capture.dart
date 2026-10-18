@@ -194,7 +194,9 @@ class ErrorCapture {
     // cada ejecución y parte un mismo error en varios títulos. El texto
     // original se conserva en `messageRaw`.
     final message = ErrorText.stripInstanceHashes(raw);
-    final flutter = details == null ? null : _flutterContext(details, text);
+    final flutter = details == null || _isRepeat(text)
+        ? null
+        : _flutterContext(details, text);
     core.recorder.record(
       ThorEventKind.error,
       {
@@ -213,6 +215,22 @@ class ErrorCapture {
       },
       origin: stack == null ? null : originFromStack(stack),
     );
+  }
+
+  static final Stopwatch _sinceStart = Stopwatch()..start();
+  static String? _lastErrorText;
+  static int _lastErrorMs = 0;
+
+  /// ¿El mismo error que acaba de pasar (hace menos de 1 s)? Un error en
+  /// `build` se repite cada frame: el contexto de Flutter (colector de
+  /// diagnósticos, regex) se calcula una vez y no en cada repetición, en el
+  /// hilo de UI.
+  static bool _isRepeat(String text) {
+    final now = _sinceStart.elapsedMilliseconds;
+    final repeat = text == _lastErrorText && now - _lastErrorMs < 1000;
+    _lastErrorText = text;
+    _lastErrorMs = now;
+    return repeat;
   }
 
   /// Tope de los textos de contexto de Flutter (resumen, información).

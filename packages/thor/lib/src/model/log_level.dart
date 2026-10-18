@@ -69,6 +69,15 @@ enum ThorLogLevel {
     caseSensitive: false,
   );
   static final _status4xx = RegExp(r'\b4\d\d\b');
+  static final _statusCode = RegExp(
+    r'\[(\d{3})\]|status(?:\s*code)?\s*[:=]?\s*(\d{3})\b',
+    caseSensitive: false,
+  );
+
+  static int? _statusOf(String message) {
+    final m = _statusCode.firstMatch(message);
+    return m == null ? null : int.tryParse(m[1] ?? m[2] ?? '');
+  }
 
   /// Nivel de un `print`/`debugPrint`, que no traen nivel: se deduce del
   /// texto ("Error al cobrar…" → error, "⚠ token por vencer" → warn) y lo
@@ -77,8 +86,14 @@ enum ThorLogLevel {
   static ThorLogLevel infer(String message, {ThorLogLevel fallback = debug}) {
     if (message.startsWith('onError(')) return error;
     if (_blocTrace.hasMatch(message)) return fallback;
-    if (_httpClientError.hasMatch(message) && _status4xx.hasMatch(message)) {
-      return warn;
+    if (_httpClientError.hasMatch(message)) {
+      // El código HTTP de verdad (`[400]`, `statusCode: 500`) manda; un
+      // «412 ms» suelto del texto no vuelve 4xx a un 500.
+      final code = _statusOf(message);
+      final client = code != null
+          ? code >= 400 && code < 500
+          : _status4xx.hasMatch(message);
+      if (client) return warn;
     }
     final text = message.contains('rror') || message.contains('ail')
         ? message.replaceAll(_emptyErrorField, '')

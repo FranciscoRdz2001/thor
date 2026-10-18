@@ -171,6 +171,20 @@ void main() {
       );
     });
 
+    testWidgets('un título que cambia solo no llena la línea de tiempo',
+        (tester) async {
+      await tester.pumpWidget(plp('Carrito (0)'));
+      ScreenCapture.check();
+      for (var i = 1; i <= 20; i++) {
+        await tester.pumpWidget(plp('Carrito ($i)'));
+        ScreenCapture.check();
+      }
+      final contexts = ThorCore.instance!.store
+          .ofKind(ThorEventKind.environment)
+          .where((e) => e.payload['signal'] == 'screen_context');
+      expect(contexts.length, lessThanOrEqualTo(5));
+    });
+
     testWidgets('sin AppBar no hay detail', (tester) async {
       await tester.pumpWidget(tabs(0));
       ScreenCapture.check();
