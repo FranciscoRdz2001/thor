@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/anr_watchdog.dart';
+import 'package:thor_flutter/src/performance_capture.dart';
 
 /// Contexto del dispositivo que cambia a media sesión, sin plugins: lo que
 /// Flutter ya avisa por [WidgetsBindingObserver].
@@ -99,6 +100,8 @@ class EnvironmentCapture with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // En segundo plano el watchdog de ANR no debe despertar al proceso.
     AnrWatchdog.setActive(active: state == AppLifecycleState.resumed);
+    // Una carga abierta al irse no mide el tiempo fuera de la app.
+    if (state != AppLifecycleState.resumed) PerformanceCapture.onBackground();
     // Ventana de ruido: al irse (inactive desde primer plano) y al volver.
     if (state == AppLifecycleState.inactive &&
         (_lifecycle == null || _lifecycle == AppLifecycleState.resumed)) {

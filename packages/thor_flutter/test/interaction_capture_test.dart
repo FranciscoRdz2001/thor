@@ -2,6 +2,26 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:thor_flutter/thor_flutter.dart';
 
+class TabShellPage extends StatelessWidget {
+  const TabShellPage({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: const FavoritosBody(),
+        bottomNavigationBar: TextButton(
+          onPressed: () {},
+          child: const Text('Favoritos'),
+        ),
+      );
+}
+
+class FavoritosBody extends StatelessWidget {
+  const FavoritosBody({super.key});
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand(
+        child: ColoredBox(color: Colors.white, child: Text('lista')),
+      );
+}
+
 class CobroPage extends StatelessWidget {
   const CobroPage({super.key});
   @override
@@ -73,6 +93,23 @@ void main() {
       ThorCore.instance!.recorder.currentScreen?.widgetClass,
       'CobroPage',
     );
+  });
+
+  testWidgets(
+      'un tap en la barra de tabs no baja la pantalla fijada por el árbol',
+      (tester) async {
+    ScreenCapture.install();
+    await tester.pumpWidget(const MaterialApp(home: TabShellPage()));
+    ScreenCapture.check();
+    final recorder = ThorCore.instance!.recorder;
+    expect(recorder.currentScreen?.widgetClass, 'FavoritosBody');
+
+    await tester.tap(find.text('Favoritos'));
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // La barra vive en TabShellPage, pero la pantalla real es la tab.
+    expect(recorder.currentScreen?.widgetClass, 'FavoritosBody');
+    ScreenCapture.uninstall();
   });
 
   testWidgets('tap fuera de todo interactivo no genera evento', (tester) async {

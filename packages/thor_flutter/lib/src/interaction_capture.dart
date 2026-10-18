@@ -188,6 +188,11 @@ class InteractionCapture {
   /// Retro-corrección: el árbol real manda sobre lo inferido en el push.
   static void _retroCorrect(ThorCore core, String? page) {
     final current = core.recorder.currentScreen;
+    // Si la pantalla vigente la fijó el árbol (una tab), el toque en la barra
+    // de tabs no la baja a la ruta contenedora: las peticiones que siguen al
+    // cambio de tab saldrían con la pantalla equivocada.
+    final tree = ScreenCapture.lastReported;
+    if (tree != null && current?.widgetClass == tree) return;
     if (page != null && current?.widgetClass != page) {
       core.recorder.currentScreen = ScreenId(
         routeName: current?.routeName,

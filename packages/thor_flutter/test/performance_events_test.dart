@@ -124,6 +124,37 @@ void main() {
       expect(load.containsKey('from'), isFalse);
     });
 
+    test('teclear antes de la pantalla: no cuenta el tiempo del usuario', () {
+      PerformanceCapture.onFrame(); // ráfaga que empieza al tocar el campo
+      fakeUs += 10000000; // 10 s escribiendo, sin quietud de frames
+      PerformanceCapture.onFrame();
+      PerformanceCapture.onUserInput(); // última tecla
+      fakeUs += 50000;
+      PerformanceCapture.onFrame(); // primer frame tras la tecla
+      fakeUs += 200000;
+      PerformanceCapture.onFrame();
+      nav('SearchScreen', action: 'screen', from: 'HomeBody');
+      PerformanceCapture.onIdle();
+      expect(perf('screen_load').single['ms'], 200);
+    });
+
+    test('ir a segundo plano cierra la carga abierta como interrumpida', () {
+      nav('CartPage', from: 'HomePage');
+      fakeUs += 400000;
+      PerformanceCapture.onBackground();
+      fakeUs += 6000000; // tiempo fuera: no cuenta
+      PerformanceCapture.onIdle();
+      expect(perf('screen_load'), [
+        {
+          'kind': 'screen_load',
+          'screen': 'CartPage',
+          'ms': 400,
+          'from': 'HomePage',
+          'interrupted': true,
+        },
+      ]);
+    });
+
     test('pantalla detectada por el árbol: desde el inicio de la ráfaga', () {
       PerformanceCapture.onFrame(); // inicio de ráfaga
       fakeUs += 250000;

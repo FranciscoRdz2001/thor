@@ -24,6 +24,15 @@ class BannerView extends StatelessWidget {
   Widget build(BuildContext context) => const SizedBox(height: 80);
 }
 
+class SkeletonPage extends StatelessWidget {
+  const SkeletonPage({super.key});
+  @override
+  Widget build(BuildContext context) => const Padding(
+        padding: EdgeInsets.all(16),
+        child: SizedBox(height: 100),
+      );
+}
+
 class DetailPage extends StatelessWidget {
   const DetailPage({super.key});
   @override
@@ -64,6 +73,24 @@ void main() {
 
     await tester.pumpWidget(tabs(1));
     expect(ScreenCapture.detect(), 'FavoriteBody');
+  });
+
+  testWidgets('a tab that is still loading (small) is already the screen',
+      (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: IndexedStack(
+            index: 1,
+            children: [
+              SizedBox.expand(child: HomeBody()),
+              SkeletonPage(),
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(ScreenCapture.detect(), 'SkeletonPage');
   });
 
   testWidgets('a change is recorded once as navigation', (tester) async {

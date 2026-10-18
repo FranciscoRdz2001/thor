@@ -347,7 +347,16 @@ class PerformanceCapture {
   @visibleForTesting
   static void onUserInput() => _interrupt();
 
+  /// La app se fue a segundo plano: lo que aún cargaba se cierra como
+  /// interrumpido, sin contar el tiempo fuera (red y frames se congelan).
+  static void onBackground() => _interrupt();
+
   static void _interrupt() {
+    // La ráfaga de frames en curso (carrusel, cursor, teclado) deja de ser
+    // "la carga" que viene: una pantalla detectada después de teclear una
+    // búsqueda se mide desde el último gesto, no desde que el usuario
+    // empezó a escribir.
+    _inBurst = false;
     if (_pendingStartUs != null) _close(interrupted: true);
   }
 

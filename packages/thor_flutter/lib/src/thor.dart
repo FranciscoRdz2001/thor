@@ -368,8 +368,12 @@ class Thor {
     if (!Platform.isIOS) return const {};
     try {
       final env = Platform.environment;
+      // El proceso de una app en el simulador no siempre hereda `SIMULATOR_*`
+      // (con `flutter run` no), y `Platform.version` dice `ios_arm64` también
+      // ahí: el binario sí vive bajo `CoreSimulator/Devices/<udid>/`.
       final simulated = env.containsKey('SIMULATOR_UDID') ||
-          env.containsKey('SIMULATOR_DEVICE_NAME');
+          env.containsKey('SIMULATOR_DEVICE_NAME') ||
+          Platform.resolvedExecutable.contains('/CoreSimulator/Devices/');
       return {
         'simulator': '$simulated',
         if (env['SIMULATOR_MODEL_IDENTIFIER'] case final model?

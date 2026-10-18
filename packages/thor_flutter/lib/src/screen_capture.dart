@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/cupertino.dart' show CupertinoNavigationBar;
 import 'package:flutter/material.dart' show AppBar, SliverAppBar;
+import 'package:flutter/rendering.dart' show RenderBox, RenderIndexedStack;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
@@ -37,6 +38,11 @@ class ScreenCapture {
   static Timer? _timer;
   static Timer? _tapTimer;
   static String? _lastReported;
+
+  /// Última pantalla fijada por el árbol (tab, página). El toque no debe
+  /// retro-corregirla a la clase de la ruta que contiene la barra de tabs:
+  /// el árbol ya sabe algo más profundo y preciso.
+  static String? get lastReported => _lastReported;
 
   /// Título puesto por esta clase (para no pisar uno que puso la app).
   static String? _autoDetail;
@@ -194,12 +200,14 @@ class ScreenCapture {
           (widget is AppBar ||
               widget is SliverAppBar ||
               widget is CupertinoNavigationBar)) {
-        final text = _titleText(switch (widget) {
-          AppBar(:final title) => title,
-          SliverAppBar(:final title) => title,
-          CupertinoNavigationBar(:final middle) => middle,
-          _ => null,
-        },);
+        final text = _titleText(
+          switch (widget) {
+            AppBar(:final title) => title,
+            SliverAppBar(:final title) => title,
+            CupertinoNavigationBar(:final middle) => middle,
+            _ => null,
+          },
+        );
         if (text != null) {
           title = text;
           titleDepth = element.depth;
@@ -216,6 +224,37 @@ class ScreenCapture {
         if (!rect.isEmpty && rect.width * rect.height >= minArea) {
           found = name;
         }
+      }
+      // La tab visible de un IndexedStack es "la pantalla" aunque, cargando,
+      // pinte poco (un skeleton): sin esto las peticiones que dispara la tab
+      // salen con la pantalla contenedora hasta que la tab llena la pantalla.
+      if (element is RenderObjectElement && ro is RenderIndexedStack) {
+        VisibleTree.visitChildren(element, (child) {
+          // Flutter envuelve cada hijo (`_VisibilityScope`, `ExcludeFocus`…):
+          // se baja por esos envoltorios de un solo hijo hasta la tab.
+          var tab = child;
+          for (var i = 0;
+              i < 12 &&
+                  !VisibleTree.isScreenName(VisibleTree.typeName(tab.widget));
+              i++) {
+            Element? next;
+            var count = 0;
+            tab.visitChildElements((c) {
+              count++;
+              next ??= c;
+            });
+            if (count != 1) break;
+            tab = next!;
+          }
+          final tabName = VisibleTree.typeName(tab.widget);
+          final tabRo = tab.renderObject;
+          if (VisibleTree.isScreenName(tabName) &&
+              tabRo is RenderBox &&
+              tabRo.hasSize &&
+              !tabRo.size.isEmpty) {
+            found = tabName;
+          }
+        });
       }
       VisibleTree.visitChildren(element, visit);
     }
