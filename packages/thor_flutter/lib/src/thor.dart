@@ -16,6 +16,7 @@ import 'package:thor_flutter/src/navigator_observer.dart';
 import 'package:thor_flutter/src/performance_capture.dart';
 import 'package:thor_flutter/src/screen_capture.dart';
 import 'package:thor_flutter/src/semantics_capture.dart';
+import 'package:thor_flutter/src/session_lifetime.dart';
 import 'package:thor_flutter/src/ui_health_capture.dart';
 
 /// Fachada Flutter de Thor — la API que ve la app.
@@ -173,6 +174,22 @@ class Thor {
   /// - [anrThreshold]: la UI bloqueada este tiempo o más se graba como
   ///   `performance {kind: 'anr'}` (un isolate aparte hace ping; solo con
   ///   la app en primer plano; apagado en tests). `null` lo desactiva.
+  /// - [sessionTimeout]: si la app pasa en segundo plano este tiempo o más
+  ///   (30 min por defecto), al volver la sesión se cierra (flush, marca
+  ///   de fin, última subida del replay) y empieza una NUEVA con otro
+  ///   [sessionId] (los listeners de [addSessionListener] se enteran). El
+  ///   tiempo en segundo plano no cuenta en la duración del replay ni de
+  ///   la sesión: queda como `lifecycle {backgroundMs}` y como un registro
+  ///   `gap` del replay. `null` desactiva la renovación (una sola sesión
+  ///   por proceso; el tiempo en background se sigue excluyendo).
+  ///
+  /// [showOverlay] monta la burbuja del inspector y el aviso de "la sesión
+  /// anterior se cayó". Son herramientas de QA: en producción dejarlo en
+  /// `false` (con [enabled] en `false` ni siquiera se instalan). Aunque
+  /// esté activo, el aviso solo sale si la sesión anterior se cayó de
+  /// verdad (error fatal, o muerta en primer plano) — no si la mató el
+  /// usuario o el SO en segundo plano —, se descarta solo a los 6 s, va
+  /// arriba y no captura toques fuera de su propio recuadro.
   static Future<void> run(
     FutureOr<void> Function() body, {
     bool enabled = kDebugMode,
@@ -188,6 +205,7 @@ class Thor {
     ThorCapturePolicy capture = const ThorCapturePolicy(),
     bool captureLogs = true,
     Duration? anrThreshold = const Duration(seconds: 2),
+    Duration? sessionTimeout = const Duration(minutes: 30),
   }) async {
     if (!enabled) {
       await body();
@@ -258,6 +276,9 @@ class Thor {
         // Pantalla atascada o en blanco, diálogos de error, imágenes rotas.
         UiHealthCapture.install();
         _watchLifecycle();
+        if (sessionTimeout != null) {
+          SessionLifetime.install(sessionTimeout, onRenewed: _notifySession);
+        }
         if (anrThreshold != null) {
           unawaited(
             AnrWatchdog.start(

@@ -7,6 +7,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/overlay/thor_ui.dart' show ThorUi;
 import 'package:thor_flutter/src/replay/wireframe.dart';
 
 /// Cuánto oculta el replay de lo que sale del dispositivo.
@@ -177,6 +178,11 @@ class ThorReplayStats {
 /// - `{"t":"user","ts":…,"id":…}` — usuario fijado/cambiado con
 ///   `Thor.setUser` (`id: null` = se limpió). Si ya se conocía al
 ///   arrancar, también va como `uid` en el meta.
+/// - `{"t":"gap","k":"background","ts":…,"ms":…}` — la app estuvo en
+///   segundo plano `ms` milisegundos reales. El reloj del replay (`ts`) se
+///   detiene mientras tanto: ese tiempo NO está en la duración del replay;
+///   el marcador existe para que el dashboard lo excluya de la duración de
+///   la sesión si la calcula con el reloj de pared.
 /// - `{"t":"ev",…}` — evento de Thor en versión ligera. En un tap, `p.l`
 ///   es el label (string; enmascarado, la lista de largos de palabra como
 ///   el texto en pantalla); `p.k` la Key, solo si el label es legible.
@@ -209,7 +215,13 @@ class ThorReplayStats {
 /// contesta `{"missing": [...]}` y solo esos bloques se mandan después.
 /// Una pantalla vista por mil usuarios se sube una vez.
 class ThorReplay {
-  ThorReplay._(this._config, this._core, this._file, this._uploadEnabled);
+  ThorReplay._(
+    this._config,
+    this._core,
+    this._file,
+    this._uploadEnabled,
+    this._directory,
+  );
 
   static ThorReplay? _instance;
 
@@ -219,6 +231,7 @@ class ThorReplay {
   final ThorReplayConfig _config;
   final ThorCore _core;
   final File? _file;
+  final Directory? _directory;
 
   /// Si esta sesión sube (muestra o ya hubo un error).
   bool _uploadEnabled;
@@ -376,7 +389,8 @@ class ThorReplay {
     }
     final sampled = Random().nextDouble() < config.sampleRate;
     final replay =
-        _instance = ThorReplay._(config, core, file, sampled).._install();
+        _instance = ThorReplay._(config, core, file, sampled, directory)
+          .._install();
     if (sampled) replay._markEnabled();
     // Sin await: el arranque de la app no espera a la red.
     unawaited(replay._askConfig());
@@ -562,7 +576,35 @@ class ThorReplay {
     );
   }
 
-  int get _ts => _clock.elapsedMilliseconds;
+  /// Tiempo del replay en ms: el reloj de la sesión SIN el tiempo en
+  /// segundo plano. Una app que pasa 25 min en background no tiene 25 min
+  /// más de video: el reloj se detiene al irse y sigue donde iba al volver.
+  int get _ts => (_bgSinceMs ?? _clock.elapsedMilliseconds) - _bgTotalMs;
+
+  /// Tiempo acumulado en segundo plano (ya excluido de [_ts]).
+  int _bgTotalMs = 0;
+
+  /// Marca de reloj crudo en la que la app se fue a segundo plano; `null`
+  /// en primer plano.
+  int? _bgSinceMs;
+
+  /// La app se fue a segundo plano: [_ts] se congela.
+  void _enterBackground() {
+    _bgSinceMs ??= _clock.elapsedMilliseconds;
+  }
+
+  /// La app volvió: se descuenta lo que estuvo fuera y se deja un registro
+  /// `{"t":"gap","k":"background","ts":…,"ms":…}` — `ts` es el punto del
+  /// video donde ocurrió y `ms` cuánto duró en realidad, para que el
+  /// dashboard excluya ese tiempo de la duración de la sesión.
+  void _leaveBackground() {
+    final since = _bgSinceMs;
+    if (since == null) return;
+    final away = _clock.elapsedMilliseconds - since;
+    _bgSinceMs = null;
+    _bgTotalMs += away;
+    _writeJson({'t': 'gap', 'k': 'background', 'ts': _ts, 'ms': away});
+  }
 
   void _install() {
     _clock.start();
@@ -623,6 +665,9 @@ class ThorReplay {
 
   void _snapshot() {
     _lastSnapAt = _ts;
+    // La UI propia de Thor (inspector, reporte de crash) no es contenido
+    // de la sesión: el video se queda en la última pantalla real.
+    if (ThorUi.openPages > 0) return;
     final Wireframe? wire;
     final List<List<Object?>> vps;
     final List<List<Object?>> refs;
@@ -776,6 +821,7 @@ class ThorReplay {
   }
 
   void _onPointer(PointerEvent e) {
+    if (ThorUi.openPages > 0) return;
     final x = _round(e.position.dx);
     final y = _round(e.position.dy);
     if (e is PointerDownEvent) {
@@ -1351,6 +1397,25 @@ class ThorReplay {
     await r.flush();
   }
 
+  /// Renovación de sesión: apaga el replay vigente (con su última subida,
+  /// sin esperar a la red más de [flushTimeout]), corre [between] — que
+  /// renueva el núcleo — y vuelve a encender el replay con la MISMA
+  /// configuración sobre la sesión nueva. Sin replay encendido solo corre
+  /// [between].
+  static Future<void> renewAround(
+    Future<void> Function() between, {
+    Duration flushTimeout = const Duration(seconds: 5),
+  }) async {
+    final r = _instance;
+    final config = r?._config;
+    final directory = r?._directory;
+    if (r != null) {
+      await stop().timeout(flushTimeout, onTimeout: () {});
+    }
+    await between();
+    if (config != null) await start(config, directory: directory);
+  }
+
   static num _round(double v) => (v * 10).round() / 10;
 
   /// FNV-1a de 32 bits (enteros acotados: igual en VM y en web).
@@ -1389,9 +1454,16 @@ class _ReplayLifecycle with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.hidden) {
-      unawaited(replay.flush());
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+        replay._enterBackground();
+        unawaited(replay.flush());
+      case AppLifecycleState.resumed:
+        replay._leaveBackground();
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.detached:
+        break;
     }
   }
 }

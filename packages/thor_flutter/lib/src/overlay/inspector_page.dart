@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/overlay/report_share.dart';
+import 'package:thor_flutter/src/overlay/thor_ui.dart';
 import 'package:thor_flutter/src/screenshot_capture.dart';
 
 /// Inspector en pantalla: la vista Chucker-style de Thor, pero sobre la
@@ -128,7 +129,9 @@ class _NetworkTab extends StatelessWidget {
           ),
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute<void>(
-              builder: (_) => _NetworkDetailPage(event: event),
+              builder: (_) => ThorOwnUi(
+                child: _NetworkDetailPage(event: event),
+              ),
               settings: const RouteSettings(name: 'thor/network-detail'),
             ),
           ),

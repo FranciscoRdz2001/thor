@@ -31,6 +31,42 @@ class RecoveredSession {
   /// Líneas ilegibles descartadas (última línea a medio escribir en un
   /// crash es lo normal). Se reporta para que el truncado sea visible.
   final int corruptLines;
+
+  /// Último estado de ciclo de vida registrado (`resumed`, `inactive`,
+  /// `paused`, `hidden`, `detached`), o `null` si la sesión no registró
+  /// ninguno (nunca salió de primer plano).
+  String? get lastLifecycleState {
+    for (final e in events.reversed) {
+      if (e.kind == ThorEventKind.environment &&
+          e.payload['signal'] == 'lifecycle') {
+        return e.payload['state'] as String?;
+      }
+    }
+    return null;
+  }
+
+  /// Si se grabó un error fatal / no manejado (`fatal: true`: zona o
+  /// `PlatformDispatcher.onError`).
+  bool get hasFatalError => events.any(
+        (e) => e.kind == ThorEventKind.error && e.payload['fatal'] == true,
+      );
+
+  /// ¿La sesión REALMENTE se cayó? Distinto de `!endedCleanly`: el usuario
+  /// o el SO matan procesos en segundo plano sin que nada falle, y eso no
+  /// es un crash que QA deba revisar.
+  ///
+  /// - Con marca de cierre: no.
+  /// - Con un error fatal/no manejado grabado: sí.
+  /// - Sin cierre y sin error fatal: sí solo si la app murió en primer
+  ///   plano. Si el último ciclo de vida fue `paused`/`hidden`/`detached`
+  ///   (o `inactive`, que es lo último que se ve al matarla desde el
+  ///   selector de apps o `simctl terminate`), la mató el usuario o el SO.
+  bool get crashed {
+    if (endedCleanly) return false;
+    if (hasFatalError) return true;
+    final state = lastLifecycleState;
+    return state == null || state == 'resumed';
+  }
 }
 
 /// Journal append-only por sesión: la persistencia que sobrevive al crash.

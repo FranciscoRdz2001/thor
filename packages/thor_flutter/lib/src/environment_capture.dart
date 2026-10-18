@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/anr_watchdog.dart';
@@ -6,7 +8,9 @@ import 'package:thor_flutter/src/anr_watchdog.dart';
 /// Flutter ya avisa por [WidgetsBindingObserver].
 ///
 /// Graba `environment {signal, …}` (journal, reporte y replay):
-/// - `lifecycle {state}`: resumed | inactive | paused | hidden | detached.
+/// - `lifecycle {state, backgroundMs?}`: resumed | inactive | paused |
+///   hidden | detached. Al volver (`resumed`) trae `backgroundMs`: lo que
+///   estuvo en segundo plano, para excluirlo de la duración de la sesión.
 /// - `memory_pressure`: el sistema avisa que anda corto de memoria.
 /// - `locale {value}`: cambió el idioma del sistema (`es_MX`).
 /// - `text_scale {value}`: cambió la escala de texto (`1.3`).
@@ -47,6 +51,7 @@ class EnvironmentCapture with WidgetsBindingObserver {
   double? _textScale;
   String? _locale;
   DateTime? _lastMemory;
+  DateTime? _backgroundAt;
 
   /// Valores actuales como línea base: el primer aviso del sistema solo se
   /// graba si de verdad cambió algo.
@@ -69,7 +74,31 @@ class EnvironmentCapture with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // En segundo plano el watchdog de ANR no debe despertar al proceso.
     AnrWatchdog.setActive(active: state == AppLifecycleState.resumed);
-    _record({'signal': 'lifecycle', 'state': state.name});
+    final background = state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden;
+    // Cuánto estuvo fuera: marca de hueco para que la duración de la
+    // sesión (y el dash) excluya el tiempo en segundo plano.
+    int? away;
+    if (background) {
+      _backgroundAt ??= DateTime.now();
+    } else if (state == AppLifecycleState.resumed && _backgroundAt != null) {
+      away = DateTime.now().difference(_backgroundAt!).inMilliseconds;
+      _backgroundAt = null;
+    }
+    _record({
+      'signal': 'lifecycle',
+      'state': state.name,
+      if (away != null) 'backgroundMs': away,
+    });
+    // El SO puede matar la app en segundo plano sin aviso: que el journal
+    // diga en disco que se fue ahí (así NO se confunde con un crash).
+    if (background) {
+      try {
+        unawaited(ThorCore.instance?.journal?.flush() ?? Future<void>.value());
+      } on Object {
+        // Persistir jamás debe tumbar a la app.
+      }
+    }
   }
 
   /// "La app se cerró sola" suele ser un OOM kill precedido de esto.

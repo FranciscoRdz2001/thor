@@ -114,10 +114,32 @@ patrones que un humano tardaría en ver:
     la capa de red). Misma URL: una vez cada 5 s.
   - `layout_overflow` sigue viniendo de la aserción de Flutter, así que
     solo existe en debug/profile: en release el framework no avisa.
+- **Sesión en segundo plano.** El tiempo fuera de primer plano no es parte
+  de la sesión: el reloj del replay se detiene al irse a `paused`/`hidden` y
+  al volver deja un registro `{"t":"gap","k":"background","ts","ms"}` (el
+  dash lo excluye de la duración). Si la app pasa
+  `Thor.run(sessionTimeout: …)` (30 min por defecto, `null` lo apaga) o más
+  en segundo plano, al volver la sesión se cierra (flush, marca de fin,
+  última subida del replay) y empieza OTRA con el mismo dispositivo, usuario
+  y contexto (`environment session_end` / `session_start {previous}`;
+  `Thor.addSessionListener` avisa del nuevo id).
+- **Aviso de crash y burbuja (solo QA).** `Thor.run(showOverlay: true)` monta
+  la burbuja del inspector y, al arrancar, el aviso "La sesión anterior se
+  cayó". En producción dejar `showOverlay: false`. El aviso solo sale si la
+  sesión anterior se cayó de verdad (`RecoveredSession.crashed`: un error
+  fatal/no manejado, o muerta en primer plano sin cierre limpio; una app
+  matada por el usuario o el SO en `paused`/`hidden`/`inactive` NO cuenta),
+  es compacto, va arriba (no tapa tabs ni botones de acción), se descarta
+  solo a los 6 s y solo captura toques dentro de su recuadro. La UI de Thor
+  (burbuja, aviso, inspector, reporte de crash) no cuenta como app: ni
+  `navigation`, `screen_load`, `interaction` ni replay.
 - **Contexto del dispositivo** (eventos `environment`, `p.signal`; en
   journal, reporte, narrador y replay, sin plugins y sin trabajo por frame:
   son avisos que Flutter ya manda, y cada valor solo se graba si cambió):
-  - `lifecycle {state}`: `resumed | inactive | paused | hidden | detached`.
+  - `lifecycle {state, backgroundMs?}`: `resumed | inactive | paused |
+    hidden | detached`. Al volver (`resumed`) trae `backgroundMs`, lo que
+    estuvo en segundo plano. Al irse a `paused`/`hidden` el journal se
+    escribe a disco (así una app matada ahí no se confunde con un crash).
   - `memory_pressure`: el sistema avisa que anda corto de memoria (espaciado
     a uno cada 5 s). Contexto oro cuando "la app se cerró sola".
   - `locale {value}` (`es_MX`), `text_scale {value}` (`1.3`) y

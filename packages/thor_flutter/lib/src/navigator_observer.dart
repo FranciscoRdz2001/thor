@@ -3,6 +3,7 @@ import 'package:flutter/material.dart' show MaterialPageRoute;
 import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/overlay/thor_overlay.dart';
+import 'package:thor_flutter/src/overlay/thor_ui.dart';
 
 /// Observer universal de navegación.
 ///
@@ -80,6 +81,11 @@ class ThorNavigatorObserver extends NavigatorObserver {
     if (overlayEnabled && navigator != null) {
       ThorOverlayManager.ensureAttached(navigator);
     }
+
+    // La UI de Thor (inspector, reporte de crash) no es una pantalla de la
+    // app: ni navegación, ni pantalla activa, ni `screen_load`. Tampoco el
+    // regreso desde ella (`from` es la ruta de Thor que se cerró).
+    if (ThorUi.isThorRoute(route) || ThorUi.isThorRoute(from)) return;
 
     final screen = resolveScreen(route, tryBuilder: resolveWidgetClass);
     core.recorder.currentScreen = screen;

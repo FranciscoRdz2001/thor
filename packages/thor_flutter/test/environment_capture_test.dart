@@ -40,8 +40,11 @@ void main() {
         tester.binding.handleAppLifecycleStateChanged(s);
       }
       expect(env(), [
-        for (final s in ['inactive', 'hidden', 'paused', 'resumed'])
+        for (final s in ['inactive', 'hidden', 'paused'])
           {'signal': 'lifecycle', 'state': s},
+        // Al volver trae cuánto estuvo en segundo plano (para excluirlo de
+        // la duración de la sesión).
+        {'signal': 'lifecycle', 'state': 'resumed', 'backgroundMs': isA<int>()},
       ]);
     });
 

@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/overlay/thor_ui.dart' show ThorOwnUi;
 import 'package:thor_flutter/src/replay/wireframe.dart'
     show ThorReplayIgnore, ThorReplayShowText;
 import 'package:thor_flutter/src/visible_tree.dart';
@@ -90,6 +91,9 @@ class InteractionCapture {
     try {
       final hit = _describeHit(event.position);
       if (hit == null) return;
+      // Un toque en la UI de Thor (burbuja, aviso, inspector) no es del
+      // usuario sobre la app: ni interacción ni retro-corrección.
+      if (hit.thorUi) return;
 
       // Retro-corrección: el árbol real manda sobre lo inferido en el push.
       final page = hit.pageClass;
@@ -136,6 +140,8 @@ class InteractionCapture {
     void visit(Element element, _Mark inherited) {
       final widget = element.widget;
       final mark = switch (widget) {
+        ThorOwnUi() => _Mark.thor,
+        _ when inherited == _Mark.thor => _Mark.thor,
         ThorReplayIgnore() => _Mark.hidden,
         ThorReplayShowText() when inherited != _Mark.hidden => _Mark.show,
         _ => inherited,
@@ -182,6 +188,7 @@ class InteractionCapture {
       pageClass: pageClass,
       labelIsCopy: mark == _Mark.show || (label?.copy ?? false),
       hidden: mark == _Mark.hidden,
+      thorUi: mark == _Mark.thor,
     );
   }
 
@@ -261,6 +268,7 @@ class _Hit {
     this.pageClass,
     this.labelIsCopy = false,
     this.hidden = false,
+    this.thorUi = false,
   });
 
   final String widgetType;
@@ -274,8 +282,12 @@ class _Hit {
 
   /// El tap cayó dentro de un [ThorReplayIgnore].
   final bool hidden;
+
+  /// El tap cayó en la UI propia de Thor ([ThorOwnUi]).
+  final bool thorUi;
 }
 
 /// Marca de privacidad heredada de los ancestros durante el recorrido.
-/// `hidden` (ThorReplayIgnore) gana sobre `show` (ThorReplayShowText).
-enum _Mark { none, show, hidden }
+/// `thor` (UI de Thor) gana sobre todo; `hidden` (ThorReplayIgnore) gana
+/// sobre `show` (ThorReplayShowText).
+enum _Mark { none, show, hidden, thor }

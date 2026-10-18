@@ -91,8 +91,7 @@ class UiHealthCapture {
   static Object? _attachedTo;
 
   /// Suscribe la escucha de peticiones al núcleo vigente (re-engancha si el
-  /// núcleo cambió: tests, hot restart).
-  @visibleForTesting
+  /// núcleo cambió: tests, hot restart, renovación de sesión).
   static void attach() {
     final core = ThorCore.instance;
     if (core == null || identical(_attachedTo, core.recorder)) return;

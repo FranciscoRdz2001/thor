@@ -69,6 +69,9 @@ class ThorCore {
   /// murió y este es el material del reporte de crash.
   RecoveredSession? recoveredPrevious;
 
+  /// Cómo se inicializó este núcleo, para [renewSession].
+  Future<ThorCore> Function()? _reinit;
+
   /// Inicializa Thor. Idempotente: llamadas repetidas devuelven la
   /// instancia existente.
   ///
@@ -138,7 +141,61 @@ class ThorCore {
       );
     }
 
+    core._reinit = () => init(
+          storageDirectory: storageDirectory,
+          redaction: redaction,
+          quotas: quotas,
+          installId: session.installId,
+          appInfo: appInfo,
+          deviceInfo: deviceInfo,
+          capture: capture,
+        );
     return _instance = core;
+  }
+
+  /// Termina esta sesión (cierre limpio: ráfagas, flush, marca de fin en el
+  /// journal) y arranca una nueva en su lugar: mismo dispositivo, misma
+  /// instalación, mismo usuario y mismos proveedores de contexto, otro
+  /// `sessionId`, línea de tiempo vacía y journal propio.
+  ///
+  /// Es lo que hace `Thor.run(sessionTimeout: …)` cuando la app vuelve de
+  /// un segundo plano largo. Los adaptadores que guardan el
+  /// `recorder` viejo deben re-engancharse al devolver; la pantalla activa
+  /// se conserva. Devuelve `this` si esta instancia ya no es la activa.
+  Future<ThorCore> renewSession({String reason = 'renewed'}) async {
+    final reinit = _reinit;
+    if (reinit == null || !identical(_instance, this)) return this;
+    final previousId = session.sessionId;
+    final screen = recorder.currentScreen;
+    final user = (id: _userId, props: _userProps);
+    final contexts = Map.of(_contextProviders);
+    recorder.record(ThorEventKind.environment, {
+      'signal': 'session_end',
+      'reason': reason,
+    });
+    await dispose();
+    final next = await reinit();
+    next
+      ..recoveredPrevious = null
+      .._contextProviders.addAll(contexts)
+      ..recorder.currentScreen = screen;
+    next.recorder.record(ThorEventKind.environment, {
+      'signal': 'session_start',
+      'reason': reason,
+      'previous': previousId,
+    });
+    if (user.id != null || user.props != null) {
+      // Directo, sin pasar por la política: ya vienen limpios.
+      next
+        .._userId = user.id
+        .._userProps = user.props;
+      next.recorder.record(ThorEventKind.environment, {
+        'signal': 'user',
+        'id': user.id,
+        if (user.props != null) 'props': user.props,
+      });
+    }
+    return next;
   }
 
   /// Un log de nivel error es tan evidencia como un error capturado: si la

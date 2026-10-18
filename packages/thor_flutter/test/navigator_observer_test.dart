@@ -163,4 +163,34 @@ void main() {
     expect(push.payload['argsType'], isNotNull);
     expect(push.payload.toString(), isNot(contains('6641234567')));
   });
+
+  testWidgets(
+      'rutas de la UI de Thor (thor/…) no son navegación ni cambian la '
+      'pantalla activa', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorObservers: [ThorNavigatorObserver()],
+        home: const HomePage(),
+      ),
+    );
+    final recorder = ThorCore.instance!.recorder;
+    final eventsBefore = navEvents().length;
+    final screenBefore = recorder.currentScreen?.display;
+
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+    unawaited(
+      navigator.push(
+        MaterialPageRoute<void>(
+          builder: (_) => const CheckoutPage(),
+          settings: const RouteSettings(name: 'thor/crash-report'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    navigator.pop();
+    await tester.pumpAndSettle();
+
+    expect(navEvents(), hasLength(eventsBefore));
+    expect(recorder.currentScreen?.display, screenBefore);
+  });
 }

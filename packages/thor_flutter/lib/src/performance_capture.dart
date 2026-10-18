@@ -146,8 +146,7 @@ class PerformanceCapture {
   static Object? _attachedTo;
 
   /// Suscribe la escucha de navegación al núcleo vigente (re-engancha si
-  /// el núcleo cambió: tests, hot restart).
-  @visibleForTesting
+  /// el núcleo cambió: tests, hot restart, renovación de sesión).
   static void attach() {
     final core = ThorCore.instance;
     if (core == null) return;

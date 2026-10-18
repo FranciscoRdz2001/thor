@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/overlay/crash_prompt.dart';
 import 'package:thor_flutter/src/overlay/inspector_page.dart';
-import 'package:thor_flutter/src/replay/wireframe.dart';
+import 'package:thor_flutter/src/overlay/thor_ui.dart';
 
 /// Burbuja flotante de Thor — el punto de entrada de QA en el dispositivo.
 ///
@@ -41,7 +41,7 @@ class ThorOverlayManager {
       return;
     }
     _entry = OverlayEntry(
-        builder: (context) => const ThorReplayIgnore(child: _ThorBubble()),);
+        builder: (context) => const ThorOwnUi(child: _ThorBubble()),);
     overlay.insert(_entry!);
     // Con la burbuja ya montada: si la sesión anterior murió, ofrecer su
     // reporte de una vez.
@@ -55,6 +55,7 @@ class ThorOverlayManager {
     _entry?.remove();
     _entry = null;
     _open = false;
+    ThorUi.debugReset();
   }
 
   static Future<void> _openInspector(BuildContext context) async {
@@ -63,16 +64,13 @@ class ThorOverlayManager {
     if (core == null) return;
     _open = true;
     // Silencio: lo que QA haga DENTRO del inspector no es parte del bug.
-    core.recorder.muted = true;
     try {
-      await Navigator.of(context, rootNavigator: true).push(
-        MaterialPageRoute<void>(
-          builder: (_) => const ThorInspectorPage(),
-          settings: const RouteSettings(name: 'thor/inspector'),
-        ),
+      await ThorUi.push(
+        Navigator.of(context, rootNavigator: true),
+        name: 'inspector',
+        builder: (_) => const ThorInspectorPage(),
       );
     } finally {
-      core.recorder.muted = false;
       _open = false;
     }
   }
