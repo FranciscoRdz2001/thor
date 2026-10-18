@@ -12,3 +12,4 @@ coverage/
 
 # OS
 .DS_Store
+.flutter-plugins-dependencies
