@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:thor/thor.dart';
 
@@ -23,7 +24,8 @@ import 'package:thor/thor.dart';
 ///   ANR (el watchdog detecta que su propio reloj saltó y descarta).
 /// - No mantiene viva a la app: es un isolate de servicio que muere con el
 ///   proceso, y `stop` lo mata explícitamente.
-/// - Apagado en debug (`kDebugMode`: un breakpoint o un hot reload bloquean
+/// - Apagado en debug salvo `anrInDebug` (`kDebugMode`: un breakpoint o
+///   un hot reload bloquean
 ///   solo la UI isolate y darían ANR falsos), en tests (`FLUTTER_TEST`) y
 ///   con Thor apagado (`Thor.run` nunca
 ///   lo arranca). Cuesta un isolate extra (~1-2 MB); `anrThreshold: null`
@@ -38,22 +40,35 @@ class AnrWatchdog {
   static Isolate? _isolate;
   static SendPort? _toDog;
   static bool _active = true;
+  static bool _warnedDebug = false;
 
   /// ¿Hay un watchdog corriendo?
   static bool get running => _isolate != null;
 
   /// Arranca el watchdog. Idempotente. [force] ignora el apagado en tests.
+  ///
+  /// [allowInDebug] lo arranca también en debug (`Thor.run(anrInDebug:
+  /// true)`, builds de QA): avisa por consola una vez, porque una pausa
+  /// del depurador o un hot reload largo se contarán como ANR.
   static Future<void> start({
     Duration threshold = const Duration(seconds: 2),
     bool force = false,
     bool active = true,
+    bool allowInDebug = false,
   }) async {
     if (_isolate != null || _rx != null) return;
     if (!force && Platform.environment.containsKey('FLUTTER_TEST')) return;
     // Con el depurador, una pausa en un breakpoint o un hot reload largo
     // bloquean SOLO la UI isolate mientras el watchdog sigue vivo: sería un
     // ANR falso. En debug no arranca (los tiempos de debug no valen igual).
-    if (!force && kDebugMode) return;
+    if (!force && !allowInDebug && kDebugMode) return;
+    if (!force && allowInDebug && kDebugMode && !_warnedDebug) {
+      _warnedDebug = true;
+      debugPrint(
+        'Thor: watchdog de ANR activo en debug (anrInDebug). Una pausa del '
+        'depurador o un hot reload largo se registrará como ANR.',
+      );
+    }
     final thresholdMs = threshold.inMilliseconds < 100
         ? 100
         : threshold.inMilliseconds;
@@ -119,6 +134,9 @@ class AnrWatchdog {
       'kind': 'anr',
       'ms': ms,
       'screen': core.recorder.currentScreen?.display,
+      // Cuándo empezó el bloqueo (el evento se graba al TERMINAR).
+      'startAt': clock.now().toUtc().subtract(Duration(milliseconds: ms))
+          .toIso8601String(),
     });
   }
 }

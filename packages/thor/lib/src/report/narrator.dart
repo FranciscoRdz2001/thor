@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/model/gesture.dart';
 import 'package:thor/src/model/log_level.dart';
 import 'package:thor/src/util/failure_name.dart';
 
@@ -25,6 +26,14 @@ import 'package:thor/src/util/failure_name.dart';
 /// termina en fallo.
 class ThorNarrator {
   const ThorNarrator._();
+
+  static String _dirName(Object? dir) => switch (dir) {
+        'up' => 'hacia arriba',
+        'down' => 'hacia abajo',
+        'left' => 'hacia la izquierda',
+        'right' => 'hacia la derecha',
+        _ => '',
+      };
 
   /// Genera los pasos desde [timeline] (ya ordenada por seq).
   static String narrate(List<ThorEvent> timeline) {
@@ -70,7 +79,31 @@ class ThorNarrator {
           final label = event.payload['label'];
           final widget = event.payload['widget'] ?? '?';
           final isInput = event.payload['isTextInput'] == true;
-          if (isInput) {
+          final gesture = event.payload['gesture'];
+          final dir = _dirName(event.payload['dir']);
+          final dist = event.payload['distance'];
+          final far = dist is int ? ' $dist px' : '';
+          if (gesture == ThorGesture.scroll) {
+            numbered(event, 'Desplazó la pantalla $dir$far');
+          } else if (gesture == ThorGesture.swipe) {
+            numbered(event, 'Deslizó $dir$far');
+          } else if (gesture == ThorGesture.edgeSwipe) {
+            numbered(event, 'Deslizó desde el borde (gesto de atrás)');
+          } else if (gesture == ThorGesture.textFocus) {
+            nested(
+              event,
+              label == null
+                  ? '· Teclado abierto en un campo de texto'
+                  : '· Teclado abierto en «$label»',
+            );
+          } else if (gesture == ThorGesture.longPress) {
+            numbered(
+              event,
+              label == null
+                  ? 'Mantuvo presionado $widget'
+                  : 'Mantuvo presionado «$label» ($widget)',
+            );
+          } else if (isInput) {
             numbered(
               event,
               label == null ? 'Tocó un campo de texto' : 'Llenó «$label»',
@@ -202,6 +235,11 @@ class ThorNarrator {
               nested(
                 event,
                 '✗ ANR: la app no respondió ${p['ms']}ms en ${p['screen']}',
+              );
+            case 'freeze':
+              nested(
+                event,
+                '✗ Congelada: un frame tardó ${p['ms']}ms en ${p['screen']}',
               );
             case 'custom':
               nested(event, '· ${p['name']}: ${p['ms']}ms');

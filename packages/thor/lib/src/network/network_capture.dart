@@ -26,6 +26,18 @@ class ThorNetworkCapture {
 
   static bool _installed = false;
 
+  static final _cutMarker = RegExp(r'…\(\+\d+\)$');
+
+  /// ¿Algún texto del cuerpo ya decodificado quedó recortado por la
+  /// política (`…(+N)`, ver `RedactionPolicy.maxValueLength`)? Así la marca
+  /// `*BodyTruncated` no depende solo del tope de bytes de la captura.
+  static bool bodyWasCut(Object? body) => switch (body) {
+        final String s => _cutMarker.hasMatch(s),
+        final Map<Object?, Object?> m => m.values.any(bodyWasCut),
+        final List<Object?> l => l.any(bodyWasCut),
+        _ => false,
+      };
+
   /// Máximo de bytes de cuerpo (petición y respuesta) retenidos por evento.
   /// Lo que pase de aquí se marca (`requestBodyTruncated` /
   /// `responseBodyTruncated`) y el tamaño ORIGINAL queda en
@@ -393,7 +405,8 @@ class _SpyRequest implements HttpClientRequest {
       'requestBytes': _requestTotal,
       if (_requestBody.isNotEmpty) ...{
         'requestBody': requestBody,
-        if (_requestTotal > _requestBody.length || _cutByPolicy(requestBody))
+        if (_requestTotal > _requestBody.length ||
+            ThorNetworkCapture.bodyWasCut(requestBody))
           'requestBodyTruncated': true,
         if (!_captures(_requestBody.toBytes(), requestMime, redaction))
           'requestBodyOmitted': true,
@@ -413,7 +426,8 @@ class _SpyRequest implements HttpClientRequest {
         },
         // Explícito: cortado por el tope de captura O por el recorte de
         // valores de la política (`…(+N)`). El panel lo muestra.
-        if (responseTruncated || _cutByPolicy(decodedResponse))
+        if (responseTruncated ||
+            ThorNetworkCapture.bodyWasCut(decodedResponse))
           'responseBodyTruncated': true,
       },
       if (error != null) ...{
@@ -611,18 +625,6 @@ class _SpyRequest implements HttpClientRequest {
       return false;
     }
   }
-
-  static final _cutMarker = RegExp(r'…\(\+\d+\)$');
-
-  /// ¿Algún texto del cuerpo ya decodificado quedó recortado por la
-  /// política (`…(+N)`, ver `RedactionPolicy.maxValueLength`)? Así la marca
-  /// `*BodyTruncated` no depende solo del tope de bytes de la captura.
-  static bool _cutByPolicy(Object? body) => switch (body) {
-        final String s => _cutMarker.hasMatch(s),
-        final Map<Object?, Object?> m => m.values.any(_cutByPolicy),
-        final List<Object?> l => l.any(_cutByPolicy),
-        _ => false,
-      };
 
   /// Decodifica un cuerpo si su content-type está permitido; si no, solo
   /// deja constancia del tamaño. JSON se redacta estructuralmente (también

@@ -72,8 +72,12 @@ class ThorBlocObserver extends BlocObserver {
         'source': 'bloc',
         'bloc': bloc.runtimeType.toString(),
         'type': error.runtimeType.toString(),
-        'message': error.toString(),
-        'stack': stackTrace.toString(),
+        'message': ErrorText.stripInstanceHashes(
+          RedactionPolicy.scrubSecrets(
+            ErrorText.clip(error.toString(), ErrorText.maxMessageChars),
+          ),
+        ),
+        'stack': ErrorText.clipStack(stackTrace),
         'fatal': false,
       },
       origin: originFromStack(stackTrace),

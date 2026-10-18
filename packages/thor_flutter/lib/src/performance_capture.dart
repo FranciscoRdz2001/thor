@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:developer' show Timeline;
+import 'dart:ui' show FramePhase;
 
+import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
@@ -24,6 +27,14 @@ import 'package:thor/thor.dart';
 ///   la medición se corta ahí con `interrupted: true` (cota inferior, no
 ///   una carga completa). `capped: true` = pasó [maxLoad] sin quietud.
 ///
+/// - `freeze` `{ms, screen, startAt}`: UN frame que tardó [freezeThreshold]
+///   (2 s) o más, de los mismos timings del callback — funciona en debug,
+///   profile y release, sin depender del watchdog (que en debug está
+///   apagado y dejaba un freeze de 6.7 s como "0 ANR"). `startAt` (UTC) es
+///   cuándo empezó el frame y `screen` la pantalla vigente en ese momento.
+///
+/// `jank` también lleva `startAt`: el inicio del primer frame lento del lote.
+///
 /// `anr` lo emite `AnrWatchdog` y `custom` sale de `Thor.measure`.
 ///
 /// Anti-ruido a propósito: NO se graba cada frame lento (una sesión de QA
@@ -44,6 +55,10 @@ class PerformanceCapture {
   /// Un frame sobre esto se reporta SIEMPRE (congelado — el usuario lo vio).
   static const Duration frozenThreshold = Duration(milliseconds: 700);
 
+  /// Un frame así de largo es una congelada (`freeze`): evento propio,
+  /// además de contar como `frozen` en el lote de jank.
+  static const Duration freezeThreshold = Duration(seconds: 2);
+
   /// Mínimo de frames lentos en un lote para considerarlo jank.
   static const int minSlowFramesPerBatch = 3;
 
@@ -52,9 +67,17 @@ class PerformanceCapture {
   static void install() {
     if (_installed) return;
     _installed = true;
-    _callback = (timings) => handleFrameTotals(
-          [for (final t in timings) t.totalSpan],
-        );
+    _callback = (timings) {
+      // Mismo reloj que los timestamps de FrameTiming: sirve para saber
+      // cuánto hace que EMPEZÓ cada frame (solo se consulta para los
+      // frames lentos; una lectura de reloj por lote, no por frame).
+      final nowUs = Timeline.now;
+      handleFrameTotals(
+        [for (final t in timings) t.totalSpan],
+        startAgoUs: (i) =>
+            nowUs - timings[i].timestampInMicroseconds(FramePhase.vsyncStart),
+      );
+    };
     SchedulerBinding.instance.addTimingsCallback(_callback!);
     attach();
     GestureBinding.instance.pointerRouter.addGlobalRoute(_onPointer);
@@ -83,20 +106,41 @@ class PerformanceCapture {
   /// después de los frames): el jank de una transición se atribuye a la
   /// pantalla de llegada, que es casi siempre la responsable.
   @visibleForTesting
-  static void handleFrameTotals(List<Duration> totals) {
+  static void handleFrameTotals(
+    List<Duration> totals, {
+    int Function(int index)? startAgoUs,
+  }) {
     final core = ThorCore.instance;
     if (core == null || totals.isEmpty) return;
 
     var slow = 0;
     var frozen = 0;
     var worst = Duration.zero;
-    for (final total in totals) {
-      if (total > frameBudget) slow++;
+    int? firstSlow;
+    List<int>? freezes;
+    for (var i = 0; i < totals.length; i++) {
+      final total = totals[i];
+      if (total > frameBudget) {
+        slow++;
+        firstSlow ??= i;
+      }
       if (total > frozenThreshold) frozen++;
+      if (total >= freezeThreshold) (freezes ??= <int>[]).add(i);
       if (total > worst) worst = total;
     }
     if (frozen == 0 && slow < minSlowFramesPerBatch) return;
 
+    // Cuándo empezó el frame [i]: UTC; `null` si el reloj no cuadra.
+    DateTime? startOf(int i) {
+      final ago = startAgoUs?.call(i) ?? totals[i].inMicroseconds;
+      if (ago < 0 || ago > const Duration(hours: 1).inMicroseconds) {
+        return null;
+      }
+      return clock.now().toUtc().subtract(Duration(microseconds: ago));
+    }
+
+    final jankStart =
+        firstSlow == null || startAgoUs == null ? null : startOf(firstSlow);
     core.recorder.record(ThorEventKind.performance, {
       'kind': 'jank',
       'screen': core.recorder.currentScreen?.display,
@@ -104,7 +148,31 @@ class PerformanceCapture {
       'frozen': frozen,
       'worstMs': worst.inMilliseconds,
       'frames': totals.length,
+      if (jankStart != null) 'startAt': jankStart.toIso8601String(),
     });
+
+    for (final i in freezes ?? const <int>[]) {
+      final start = startOf(i);
+      core.recorder.record(ThorEventKind.performance, {
+        'kind': 'freeze',
+        'ms': totals[i].inMilliseconds,
+        'screen': (start == null ? null : _screenAt(core, start)) ??
+            core.recorder.currentScreen?.display,
+        if (start != null) 'startAt': start.toIso8601String(),
+      });
+    }
+  }
+
+  /// Pantalla vigente en [at]: la de la última navegación anterior.
+  static String? _screenAt(ThorCore core, DateTime at) {
+    final navs = core.store.ofKind(ThorEventKind.navigation);
+    for (var i = navs.length - 1; i >= 0; i--) {
+      final e = navs[i];
+      if (e.atUtc.isAfter(at)) continue;
+      final to = e.payload['to'];
+      return to is String ? to : e.screen?.display;
+    }
+    return null;
   }
 
   // ── Reloj y arranque ──

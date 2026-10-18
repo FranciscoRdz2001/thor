@@ -1,6 +1,8 @@
+import 'package:clock/clock.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/icon_names.dart';
 import 'package:thor_flutter/src/overlay/thor_ui.dart' show ThorOwnUi;
 import 'package:thor_flutter/src/replay/wireframe.dart'
     show ThorReplayIgnore, ThorReplayShowText;
@@ -25,6 +27,15 @@ import 'package:thor_flutter/src/visible_tree.dart';
 /// [ThorReplayIgnore]. Con el texto visible (default) el replay manda el
 /// label legible (sin secretos); con `maskText`/estricto enmascara lo que
 /// no sea copy.
+///
+/// Qué se registra (`gesture`, ver [ThorGesture]): `tap`, `long_press`
+/// (≥ 500 ms quieto), `scroll` (arrastre que empieza sobre algo
+/// desplazable: `axis`, `dir`, `distance`, `start`, `end`, `durationMs`),
+/// `swipe` (arrastre fuera de lo desplazable), `edge_swipe` (el gesto de
+/// "atrás" de iOS: arrastre horizontal desde el borde) y `text_focus` (un
+/// campo de texto recibió el foco → teclado; SOLO su etiqueta, nunca lo
+/// escrito). Todo sale de los mismos eventos de puntero ya escuchados: sin
+/// trabajo por frame ni por `PointerMove`.
 ///
 /// De pasada hace la retro-corrección de pantalla: si el ancestro tipo
 /// página del tap difiere de lo que resolvió el NavigatorObserver, gana el
@@ -73,6 +84,7 @@ class InteractionCapture {
     _installed = true;
     _route = _onPointer;
     GestureBinding.instance.pointerRouter.addGlobalRoute(_route!);
+    FocusManager.instance.addListener(_onFocusChanged);
   }
 
   /// Desinstala (tests).
@@ -82,54 +94,236 @@ class InteractionCapture {
     if (_route != null) {
       GestureBinding.instance.pointerRouter.removeGlobalRoute(_route!);
     }
+    FocusManager.instance.removeListener(_onFocusChanged);
+    _focused = null;
+    _downPointer = null;
+    _downAt = null;
+    _lastScrollAt = null;
   }
 
-  /// Dónde cayó el dedo: un toque (no un scroll) termina cerca.
+  /// Un arrastre (no un toque) pasa de este recorrido: el `kTouchSlop`.
+  static const double _dragSlop = 18;
+
+  /// Zona del borde de pantalla donde empieza el gesto de "atrás".
+  static const double _edgeZone = 24;
+
+  /// Recorrido horizontal mínimo de un gesto de borde.
+  static const double _edgeMinTravel = 60;
+
+  /// Dos desplazamientos seguidos más juntos que esto cuentan como uno
+  /// (una lista larga = muchos arrastres; no deben desalojar los toques
+  /// de la cuota de interacciones).
+  static const Duration _scrollCoalesce = Duration(milliseconds: 500);
+
+  /// Dónde y cuándo cayó el dedo (un solo puntero a la vez).
   static Offset? _downAt;
+  static DateTime? _downTime;
+  static int? _downPointer;
+
+  /// Hubo un segundo dedo durante el gesto (pinch): no es toque ni arrastre.
+  static bool _multiTouch = false;
+  static DateTime? _lastScrollAt;
 
   static void _onPointer(PointerEvent event) {
     if (event is PointerDownEvent) {
+      if (_downPointer != null && _downPointer != event.pointer) {
+        _multiTouch = true; // segundo dedo: pinch/zoom.
+        return;
+      }
+      _downPointer = event.pointer;
       _downAt = event.position;
+      _downTime = clock.now();
+      _multiTouch = false;
+      return;
+    }
+    if (event is PointerCancelEvent) {
+      if (event.pointer == _downPointer) _downPointer = null;
       return;
     }
     if (event is! PointerUpEvent) return;
+    if (event.pointer != _downPointer) return;
+    final down = _downAt;
+    final downTime = _downTime;
+    final multi = _multiTouch;
+    _downPointer = null;
+    _multiTouch = false;
     final core = ThorCore.instance;
     if (core == null) return;
+    final travel = down == null ? 0.0 : (event.position - down).distance;
+    final held =
+        downTime == null ? Duration.zero : clock.now().difference(downTime);
     // Un toque puede cambiar de pantalla (tab): se anota al INICIO, no al
     // terminar de cargar. Un scroll no.
-    if (_downAt case final down? when (event.position - down).distance < 18) {
-      ScreenCapture.onTap();
-    }
+    if (down != null && travel < _dragSlop) ScreenCapture.onTap();
+    if (multi) return;
 
     try {
-      final hit = _describeHit(event.position);
-      if (hit == null) return;
+      if (down != null && travel >= _dragSlop) {
+        _recordDrag(core, event, down, held);
+        return;
+      }
+      final probe = _probe(event.position);
+      final hit = probe.hit;
       // Un toque en la UI de Thor (burbuja, aviso, inspector) no es del
       // usuario sobre la app: ni interacción ni retro-corrección.
-      if (hit.thorUi) return;
-
-      // Retro-corrección: el árbol real manda sobre lo inferido en el push.
-      final page = hit.pageClass;
-      final current = core.recorder.currentScreen;
-      if (page != null && current?.widgetClass != page) {
-        core.recorder.currentScreen = ScreenId(
-          routeName: current?.routeName,
-          widgetClass: page,
-          routeType: current?.routeType,
-        );
-      }
-
+      if (probe.thorUi) return;
+      _retroCorrect(core, probe.pageClass);
+      if (hit == null) return;
+      final long = held >= kLongPressTimeout;
       core.recorder.record(ThorEventKind.interaction, {
-        'gesture': 'tap',
+        'gesture': long ? ThorGesture.longPress : ThorGesture.tap,
         'widget': hit.widgetType,
         if (hit.label != null) 'label': hit.label,
         if (hit.keyValue != null) 'key': hit.keyValue,
         'isTextInput': hit.isTextInput,
         if (hit.labelIsCopy) 'copy': true,
         if (hit.hidden) 'hidden': true,
+        if (long) 'durationMs': held.inMilliseconds,
       });
     } on Object {
       // La captura de interacciones jamás puede tirar la app que observa.
+    }
+  }
+
+  /// Retro-corrección: el árbol real manda sobre lo inferido en el push.
+  static void _retroCorrect(ThorCore core, String? page) {
+    final current = core.recorder.currentScreen;
+    if (page != null && current?.widgetClass != page) {
+      core.recorder.currentScreen = ScreenId(
+        routeName: current?.routeName,
+        widgetClass: page,
+        routeType: current?.routeType,
+      );
+    }
+  }
+
+  /// Un arrastre terminado: borde (atrás), scroll o swipe.
+  static void _recordDrag(
+    ThorCore core,
+    PointerUpEvent up,
+    Offset down,
+    Duration held,
+  ) {
+    final probe = _probe(down);
+    if (probe.thorUi) return;
+    _retroCorrect(core, probe.pageClass);
+    final delta = up.position - down;
+    final horizontal = delta.dx.abs() >= delta.dy.abs();
+    final dir = horizontal
+        ? (delta.dx >= 0 ? 'right' : 'left')
+        : (delta.dy >= 0 ? 'down' : 'up');
+
+    final width = _viewWidth(up.viewId);
+    final edge = width == null
+        ? null
+        : down.dx <= _edgeZone
+            ? 'left'
+            : down.dx >= width - _edgeZone
+                ? 'right'
+                : null;
+    final isEdge = edge != null &&
+        horizontal &&
+        delta.dx.abs() >= _edgeMinTravel &&
+        delta.dx.abs() > delta.dy.abs() * 2;
+
+    final base = <String, Object?>{
+      'dir': dir,
+      'distance': delta.distance.round(),
+      'durationMs': held.inMilliseconds,
+      'start': [down.dx.round(), down.dy.round()],
+      'end': [up.position.dx.round(), up.position.dy.round()],
+    };
+    if (isEdge) {
+      core.recorder.record(ThorEventKind.interaction, {
+        'gesture': ThorGesture.edgeSwipe,
+        'widget': 'screen_edge',
+        'edge': edge,
+        ...base,
+      });
+      return;
+    }
+    final axis = probe.scrollAxis;
+    if (axis != null) {
+      // Una lista larga = muchos arrastres seguidos: uno solo por ráfaga.
+      final now = clock.now();
+      final last = _lastScrollAt;
+      _lastScrollAt = now;
+      if (last != null && now.difference(last) < _scrollCoalesce) return;
+      core.recorder.record(ThorEventKind.interaction, {
+        'gesture': ThorGesture.scroll,
+        'widget': 'Scrollable',
+        'axis': axis == Axis.vertical ? 'vertical' : 'horizontal',
+        if (probe.pageClass != null) 'page': probe.pageClass,
+        ...base,
+      });
+      return;
+    }
+    core.recorder.record(ThorEventKind.interaction, {
+      'gesture': ThorGesture.swipe,
+      'widget': probe.hit?.widgetType ?? 'screen',
+      if (probe.hit?.label != null) 'label': probe.hit!.label,
+      if (probe.hit?.labelIsCopy ?? false) 'copy': true,
+      if (probe.hit?.hidden ?? false) 'hidden': true,
+      ...base,
+    });
+  }
+
+  static double? _viewWidth(int viewId) {
+    final view = WidgetsBinding.instance.platformDispatcher.view(id: viewId);
+    if (view == null || view.devicePixelRatio == 0) return null;
+    return view.physicalSize.width / view.devicePixelRatio;
+  }
+
+  // ── Foco de campos de texto (teclado) ──
+
+  static FocusNode? _focused;
+
+  static void _onFocusChanged() {
+    final node = FocusManager.instance.primaryFocus;
+    if (identical(node, _focused)) return;
+    _focused = node;
+    final context = node?.context;
+    if (context == null) return;
+    final core = ThorCore.instance;
+    if (core == null) return;
+    try {
+      // `EditableText` adjunta su nodo de foco con el contexto de un
+      // `Focus` propio, que cuelga de él.
+      final editable = context.widget is EditableText
+          ? context.widget as EditableText
+          : context.findAncestorWidgetOfExactType<EditableText>();
+      if (editable == null) return;
+      var ownUi = false;
+      TextField? field;
+      String? formField;
+      context.visitAncestorElements((e) {
+        final w = e.widget;
+        if (w is ThorOwnUi) ownUi = true;
+        if (w is TextField && field == null) field = w;
+        if (formField == null && w is FormField) {
+          formField = _stripGenerics(w.runtimeType.toString());
+        }
+        return field == null || !ownUi;
+      });
+      if (ownUi) return;
+      final d = field?.decoration;
+      final label = d?.labelText ?? d?.hintText;
+      final type = formField == 'TextFormField'
+          ? 'TextFormField'
+          : field != null
+              ? 'TextField'
+              : _stripGenerics(editable.runtimeType.toString());
+      core.recorder.record(ThorEventKind.interaction, {
+        'gesture': ThorGesture.textFocus,
+        'widget': type,
+        if (label != null) 'label': label,
+        'copy': true,
+        'isTextInput': true,
+        if (editable.obscureText) 'obscure': true,
+        'keyboard': editable.keyboardType.toString(),
+      });
+    } on Object {
+      // Observar el foco jamás puede tirar la app.
     }
   }
 
@@ -137,11 +331,13 @@ class InteractionCapture {
   /// RenderBox contiene [position]. Visible para tests.
   @visibleForTesting
   static HitDescription? describeHitForTest(Offset position) =>
-      _describeHit(position);
+      _probe(position).hit;
 
-  static _Hit? _describeHit(Offset position) {
+  /// Qué hay bajo [position]: el interactivo más profundo, la lista
+  /// desplazable más profunda, la clase de página y si es la UI de Thor.
+  static _Probe _probe(Offset position) {
     final rootElement = WidgetsBinding.instance.rootElement;
-    if (rootElement == null) return null;
+    if (rootElement == null) return const _Probe();
 
     Element? bestHighLevel;
     Element? bestPrimitive;
@@ -149,6 +345,8 @@ class InteractionCapture {
     var highLevelMark = _Mark.none;
     var primitiveMark = _Mark.none;
     String? pageClass;
+    Axis? scrollAxis;
+    var thorUi = false;
 
     void visit(Element element, _Mark inherited) {
       final widget = element.widget;
@@ -170,6 +368,7 @@ class InteractionCapture {
         if (!render.paintBounds.contains(local)) {
           return; // la rama entera no contiene el punto: poda.
         }
+        if (mark == _Mark.thor) thorUi = true;
         final typeName = _stripGenerics(element.widget.runtimeType.toString());
         if (_highLevelTypes.contains(typeName)) {
           bestHighLevel = element; // el más profundo de su nivel gana
@@ -177,6 +376,11 @@ class InteractionCapture {
         } else if (_primitiveTypes.contains(typeName)) {
           bestPrimitive = element;
           primitiveMark = mark;
+        }
+        // El scroll interno de un campo de texto no es una lista.
+        if (widget is Scrollable &&
+            element.findAncestorWidgetOfExactType<EditableText>() == null) {
+          scrollAxis = widget.axis;
         }
         if (VisibleTree.isScreenName(typeName)) pageClass = typeName;
       }
@@ -188,20 +392,27 @@ class InteractionCapture {
 
     // Alto nivel manda: el GestureDetector interno de un botón es ruido.
     final target = bestHighLevel ?? bestPrimitive;
-    if (target == null) return null;
-    final mark = bestHighLevel != null ? highLevelMark : primitiveMark;
-
-    final type = _stripGenerics(target.widget.runtimeType.toString());
-    final label = _labelOf(target, copyText: _copyTypes.contains(type));
-    return _Hit(
-      widgetType: type,
-      label: label?.text,
-      keyValue: _keyOf(target.widget.key),
-      isTextInput: type == 'TextField' || type == 'TextFormField',
+    _Hit? hit;
+    if (target != null) {
+      final mark = bestHighLevel != null ? highLevelMark : primitiveMark;
+      final type = _stripGenerics(target.widget.runtimeType.toString());
+      final label = _labelOf(target, copyText: _copyTypes.contains(type));
+      hit = _Hit(
+        widgetType: type,
+        label: label?.text,
+        keyValue: _keyOf(target.widget.key),
+        isTextInput: type == 'TextField' || type == 'TextFormField',
+        pageClass: pageClass,
+        labelIsCopy: mark == _Mark.show || (label?.copy ?? false),
+        hidden: mark == _Mark.hidden,
+        thorUi: mark == _Mark.thor,
+      );
+    }
+    return _Probe(
+      hit: hit,
+      scrollAxis: scrollAxis,
       pageClass: pageClass,
-      labelIsCopy: mark == _Mark.show || (label?.copy ?? false),
-      hidden: mark == _Mark.hidden,
-      thorUi: mark == _Mark.thor,
+      thorUi: thorUi || (hit?.thorUi ?? false),
     );
   }
 
@@ -216,13 +427,17 @@ class InteractionCapture {
         _ => key.toString(),
       };
 
-  /// Etiqueta legible del elemento: hint de un campo, texto del primer
-  /// `Text` descendiente, o tooltip. Truncada — es una etiqueta, no datos.
+  /// Etiqueta legible del elemento: hint de un campo, `Semantics.label`,
+  /// tooltip, texto del primer `Text` descendiente o NOMBRE del ícono
+  /// (`icono:arrow_back`). Un número suelto (la insignia "1" del carrito)
+  /// solo vale si no hay nada mejor. Si el elemento no trae nada (un
+  /// `GestureDetector` sobre un `Container` vacío), se mira la envoltura
+  /// cercana ([_labelFromAncestors]). Truncada — es una etiqueta, no datos.
   ///
   /// `copy` dice si es copy de la interfaz: hint/label de decoración,
-  /// tooltip e ícono lo son siempre (los escribe la app); el texto de un
-  /// `Text` solo si [copyText] (botón de alto nivel) o si está dentro de
-  /// un [ThorReplayShowText] bajo el elemento tocado.
+  /// semántica, tooltip e ícono lo son siempre (los escribe la app); el
+  /// texto de un `Text` solo si [copyText] (botón de alto nivel) o si está
+  /// dentro de un [ThorReplayShowText] bajo el elemento tocado.
   static ({String text, bool copy})? _labelOf(
     Element element, {
     required bool copyText,
@@ -236,41 +451,149 @@ class InteractionCapture {
       return text == null ? null : (text: text, copy: true);
     }
 
+    final found = _searchLabel(element, copyText: copyText) ??
+        _labelFromAncestors(element);
+    if (found == null) return null;
+    return (
+      text: found.text.length > 60
+          ? '${found.text.substring(0, 60)}…'
+          : found.text,
+      copy: found.copy,
+    );
+  }
+
+  /// Primera etiqueta en el subárbol de [element] (profundidad primero,
+  /// como se lee en pantalla). Los números sueltos son el último recurso.
+  static ({String text, bool copy})? _searchLabel(
+    Element element, {
+    required bool copyText,
+  }) {
     String? text;
     var copy = false;
+    String? numeric;
+    var numericCopy = false;
     void findText(Element e, {required bool inShow}) {
       if (text != null) return;
       final w = e.widget;
       final show = inShow || w is ThorReplayShowText;
-      if (w is Text && w.data != null && w.data!.trim().isNotEmpty) {
-        text = w.data!.trim();
-        copy = copyText || show;
-        return;
+      if (w is Semantics) {
+        final label = _semanticText(w);
+        if (label != null) {
+          text = label;
+          copy = true;
+          return;
+        }
       }
-      if (w is Tooltip) {
-        text = w.message;
+      if (w is Text) {
+        final data = (w.data ?? w.textSpan?.toPlainText())?.trim();
+        if (data != null && data.isNotEmpty) {
+          if (_isCounter(data)) {
+            numeric ??= data;
+            numericCopy = copyText || show;
+          } else {
+            text = data;
+            copy = copyText || show;
+            return;
+          }
+        }
+      }
+      if (w is Tooltip && (w.message ?? '').trim().isNotEmpty) {
+        text = w.message!.trim();
         copy = true;
         return;
       }
       if (w is Icon && w.icon != null) {
-        text = 'icono:${w.icon}';
+        final semantic = w.semanticLabel?.trim();
+        text = semantic != null && semantic.isNotEmpty
+            ? semantic
+            : IconNames.labelOf(w.icon!);
         copy = true;
+        return;
       }
       e.visitChildElements((child) => findText(child, inShow: show));
     }
 
     element.visitChildElements((child) => findText(child, inShow: false));
-    final found = text;
-    if (found == null) return null;
-    return (
-      text: found.length > 60 ? '${found.substring(0, 60)}…' : found,
-      copy: copy,
-    );
+    if (text != null) return (text: text!, copy: copy);
+    if (numeric != null) return (text: numeric!, copy: numericCopy);
+    return null;
   }
+
+  /// `label` o `tooltip` de un `Semantics`, si traen texto.
+  static String? _semanticText(Semantics w) {
+    for (final t in [w.properties.label, w.properties.tooltip]) {
+      if (t != null && t.trim().isNotEmpty) return t.trim();
+    }
+    return null;
+  }
+
+  static final _counter = RegExp(r'^[\d.,+]{1,4}$');
+
+  /// Insignias y contadores ("1", "12", "99+"): no nombran el botón.
+  static bool _isCounter(String text) => _counter.hasMatch(text);
+
+  /// Hasta [_maxAncestorHops] elementos hacia arriba, mientras la envoltura
+  /// siga siendo del tamaño de un botón (no más de [_maxAncestorGrowth]
+  /// veces el área del elemento): la etiqueta de un botón sin contenido
+  /// suele estar en el `Semantics`/`Tooltip`/`Text` que lo rodea. Nunca
+  /// sube a una página entera.
+  static ({String text, bool copy})? _labelFromAncestors(Element element) {
+    final render = element.renderObject;
+    if (render is! RenderBox || !render.hasSize) return null;
+    final area = render.size.width * render.size.height;
+    if (area <= 0) return null;
+    ({String text, bool copy})? result;
+    var hops = 0;
+    element.visitAncestorElements((ancestor) {
+      if (++hops > _maxAncestorHops) return false;
+      final box = ancestor.renderObject;
+      if (box is! RenderBox || !box.hasSize) return true;
+      if (box.size.width * box.size.height > area * _maxAncestorGrowth) {
+        return false;
+      }
+      final w = ancestor.widget;
+      if (w is Semantics) {
+        final label = _semanticText(w);
+        if (label != null) {
+          result = (text: label, copy: true);
+          return false;
+        }
+      }
+      if (w is Tooltip && (w.message ?? '').trim().isNotEmpty) {
+        result = (text: w.message!.trim(), copy: true);
+        return false;
+      }
+      final inside = _searchLabel(ancestor, copyText: false);
+      if (inside != null) {
+        result = inside;
+        return false;
+      }
+      return true;
+    });
+    return result;
+  }
+
+  static const int _maxAncestorHops = 10;
+  static const double _maxAncestorGrowth = 6;
 }
 
 /// Descripción de un tap resuelta desde el árbol (visible para tests).
 typedef HitDescription = _Hit;
+
+/// Lo que hay bajo un punto de la pantalla (ver `InteractionCapture._probe`).
+class _Probe {
+  const _Probe({
+    this.hit,
+    this.scrollAxis,
+    this.pageClass,
+    this.thorUi = false,
+  });
+
+  final _Hit? hit;
+  final Axis? scrollAxis;
+  final String? pageClass;
+  final bool thorUi;
+}
 
 class _Hit {
   const _Hit({

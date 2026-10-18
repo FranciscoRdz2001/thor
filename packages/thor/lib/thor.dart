@@ -6,6 +6,7 @@
 library;
 
 export 'src/model/event.dart';
+export 'src/model/gesture.dart';
 export 'src/model/log_level.dart';
 export 'src/model/session.dart';
 export 'src/network/network_capture.dart' show ThorNetworkCapture;
@@ -22,4 +23,5 @@ export 'src/storage/storage_capture.dart';
 export 'src/store/capture_policy.dart';
 export 'src/store/event_store.dart';
 export 'src/thor_core.dart';
+export 'src/util/error_text.dart';
 export 'src/util/origin.dart';

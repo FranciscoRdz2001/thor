@@ -1,4 +1,5 @@
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/model/gesture.dart';
 import 'package:thor/src/model/session.dart';
 import 'package:thor/src/persistence/journal.dart';
 
@@ -117,7 +118,8 @@ class ThorSessionDiff {
         for (final e in timeline)
           if (e.kind == ThorEventKind.navigation)
             'abrió ${e.payload['to'] ?? e.screen?.display ?? '?'}'
-          else if (e.kind == ThorEventKind.interaction)
+          else if (e.kind == ThorEventKind.interaction &&
+              ThorGesture.isPress(e.payload['gesture']))
             'tocó ${e.payload['label'] ?? e.payload['widget'] ?? '?'}',
       ];
 

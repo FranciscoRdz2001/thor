@@ -275,7 +275,12 @@ void main() {
         'ms': 840,
         'data': {'items': 3, 'token': RedactionPolicy.redactedMarker},
       });
-      expect(perf[1], {'kind': 'anr', 'ms': 2400, 'screen': 'CobroPage'});
+      expect(perf[1], {
+        'kind': 'anr',
+        'ms': 2400,
+        'screen': 'CobroPage',
+        'startAt': isA<String>(),
+      });
       expect(perf[2], {
         'kind': 'jank',
         'screen': 'CobroPage',

@@ -1,4 +1,5 @@
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/model/gesture.dart';
 
 /// Agregados calculados sobre la línea de tiempo — las vistas que responden
 /// preguntas sin volcar el crudo (un dump de 4000 líneas quema el contexto
@@ -119,6 +120,8 @@ class ThorAggregates {
 
     for (final event in timeline) {
       if (event.kind != ThorEventKind.interaction) continue;
+      // Solo toques: tres desplazamientos seguidos no son frustración.
+      if (!ThorGesture.isPress(event.payload['gesture'])) continue;
       final sameTarget = buffer.isNotEmpty &&
           buffer.last.payload['label'] == event.payload['label'] &&
           buffer.last.payload['widget'] == event.payload['widget'] &&

@@ -132,6 +132,7 @@ class ErrorCapture {
       source: isOverflow ? 'layout_overflow' : 'flutter',
       fatal: false,
       library: details.library,
+      details: details,
     );
     // Un desborde es EL caso donde la imagen vale más que el texto: se
     // captura en cuanto ocurre, no al generar el reporte (para entonces la
@@ -176,25 +177,35 @@ class ErrorCapture {
     required String source,
     required bool fatal,
     String? library,
+    FlutterErrorDetails? details,
   }) {
     final core = ThorCore.instance;
     if (core == null) return;
+    final text = error.toString();
+    // El mensaje del error puede traer PII (p.ej. un Exception con el
+    // email en el texto) — se trunca, y la política decide en el
+    // reporte si se muestra completo. Los SECRETOS no esperan al
+    // reporte: un `DioException` con `Authorization: Bearer …` o una
+    // URL con `?token=` no debe tocar el journal en disco.
+    final raw = RedactionPolicy.scrubSecrets(
+      ErrorText.clip(text, ErrorText.maxMessageChars),
+    );
+    // Sin el hash de instancia (`_AddToCartWidgetState#cb997`): cambia en
+    // cada ejecución y parte un mismo error en varios títulos. El texto
+    // original se conserva en `messageRaw`.
+    final message = ErrorText.stripInstanceHashes(raw);
+    final flutter = details == null ? null : _flutterContext(details, text);
     core.recorder.record(
       ThorEventKind.error,
       {
         'source': source,
         'fatal': fatal,
         'type': error.runtimeType.toString(),
-        // El mensaje del error puede traer PII (p.ej. un Exception con el
-        // email en el texto) — se trunca, y la política decide en el
-        // reporte si se muestra completo. Los SECRETOS no esperan al
-        // reporte: un `DioException` con `Authorization: Bearer …` o una
-        // URL con `?token=` no debe tocar el journal en disco.
-        'message': RedactionPolicy.scrubSecrets(
-          _truncate(error.toString(), 500),
-        ),
+        'message': message,
+        if (message != raw) 'messageRaw': raw,
         if (library != null) 'library': library,
-        if (stack != null) 'stack': _truncate(stack.toString(), 4000),
+        if (stack != null) 'stack': ErrorText.clipStack(stack),
+        ...?flutter,
         // "¿Qué fue lo último que hizo el usuario?" — la pregunta #1 al
         // triar un crash. Se copia AL evento (no solo al timeline) para
         // que la agrupación por huella la conserve.
@@ -204,8 +215,59 @@ class ErrorCapture {
     );
   }
 
+  /// Tope de los textos de contexto de Flutter (resumen, información).
+  static const _maxContextChars = 600;
+
+  /// Lo que Flutter sabe del error además de la excepción: `context`
+  /// ("while building ListView"), el resumen del `informationCollector`
+  /// (el árbol de widgets/la ruta de render implicados) y, en un desborde
+  /// de layout, el widget y el archivo que lo causaron. Nunca lanza: corre
+  /// dentro del manejador de errores y el colector es código de terceros.
+  static Map<String, Object?>? _flutterContext(
+    FlutterErrorDetails details,
+    String exceptionText,
+  ) {
+    try {
+      final context = details.context?.toDescription();
+      String? info;
+      final collector = details.informationCollector;
+      if (collector != null) {
+        info = collector()
+            .map((node) => node.toDescription())
+            .where((line) => line.trim().isNotEmpty)
+            .join('\n');
+      }
+      final culprit = ErrorText.errorCausingWidget(
+        '$exceptionText\n${info ?? ''}',
+      );
+      return {
+        if (context != null && context.isNotEmpty)
+          'context': RedactionPolicy.scrubSecrets(
+            ErrorText.clip(context, _maxContextChars),
+          ),
+        if (info != null && info.isNotEmpty)
+          'info': RedactionPolicy.scrubSecrets(
+            ErrorText.stripInstanceHashes(
+              ErrorText.clip(info, _maxContextChars),
+            ),
+          ),
+        if (culprit != null) ...{
+          'widget': culprit.widget,
+          if (culprit.file != null) 'file': culprit.file,
+        },
+      };
+    } on Object {
+      return null;
+    }
+  }
+
   static Map<String, Object?> _lastActionOf(ThorCore core) {
-    final tap = core.store.lastOfKind(ThorEventKind.interaction);
+    // Solo toques: un scroll o el foco de un campo no son «lo que tocó».
+    final tap = core.store
+        .ofKind(ThorEventKind.interaction)
+        .reversed
+        .where((e) => ThorGesture.isPress(e.payload['gesture']))
+        .firstOrNull;
     if (tap == null) return const {};
     final label = tap.payload['label'] ?? tap.payload['widget'];
     return {'lastAction': 'tocó «$label» (#${tap.seq})'};

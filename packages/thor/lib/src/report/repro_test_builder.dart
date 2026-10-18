@@ -1,4 +1,5 @@
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/model/gesture.dart';
 
 /// Genera el ESQUELETO de un `integration_test` que reproduce la sesión.
 ///
@@ -79,7 +80,8 @@ ${body.join('\n')}
   }
 
   static bool _isStep(ThorEvent e) =>
-      e.kind == ThorEventKind.interaction ||
+      (e.kind == ThorEventKind.interaction &&
+          ThorGesture.isPress(e.payload['gesture'])) ||
       (e.kind == ThorEventKind.navigation &&
           e.payload['action'] == 'push');
 
@@ -101,10 +103,12 @@ ${body.join('\n')}
         '    await tester.pumpAndSettle();',
       ];
     }
+    final action =
+        event.payload['gesture'] == ThorGesture.longPress ? 'longPress' : 'tap';
     final tap = label == null
-        ? '    await tester.tap(find.byType($widget)); '
+        ? '    await tester.$action(find.byType($widget)); '
             '// TODO(thor): finder sin etiqueta'
-        : "    await tester.tap(find.text('${_escape(label)}'));";
+        : "    await tester.$action(find.text('${_escape(label)}'));";
     return [tap, '    await tester.pumpAndSettle();'];
   }
 

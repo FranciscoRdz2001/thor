@@ -111,8 +111,13 @@ patrones que un humano tardaría en ver:
     termine, se corta ahí con `interrupted: true` (es una cota inferior, no
     una carga completa: los agregados de lentitud deben excluirla), y
     `capped: true` si pasaron 10 s sin quietud.
-  - `jank {screen, slow, frozen, worstMs, frames}`: por lote de frames y
-    con la pantalla vigente al entregarse el lote (≤ ~1 s después).
+  - `jank {screen, slow, frozen, worstMs, frames, startAt?}`: por lote de
+    frames y con la pantalla vigente al entregarse el lote (≤ ~1 s
+    después); `startAt` (UTC) es el inicio del primer frame lento.
+  - `freeze {ms, screen, startAt}`: UN frame de 2 s o más, de los mismos
+    timings (sin costo extra por frame), en debug, profile y release. La
+    pantalla es la vigente cuando EMPEZÓ el frame. Es lo que ve una
+    congelada aunque el watchdog de ANR esté apagado.
   - `anr {ms, screen}`: la UI isolate bloqueada ≥ `anrThreshold` (2 s por
     defecto, `Thor.run(anrThreshold: ...)`, `null` lo apaga). Un isolate
     aparte hace ping cada ~umbral/4 (500 ms): sin trabajo por frame, un
@@ -120,8 +125,11 @@ patrones que un humano tardaría en ver:
     timer se cancela: no despierta al proceso), no confunde una suspensión
     del SO con un bloqueo, no mantiene viva la app y está apagado en tests
     y con Thor apagado, y también en debug (`kDebugMode`: un breakpoint o
-    un hot reload bloquean solo la UI isolate y serían ANR falsos). Solo ve los ANR que terminan (si el SO mata la app
-    a media espera no hubo quién grabarlo).
+    un hot reload bloquean solo la UI isolate y serían ANR falsos);
+    `Thor.run(anrInDebug: true)` lo enciende en debug para builds de QA
+    (cada pausa del depurador contará como ANR; avisa por consola). Solo
+    ve los ANR que terminan (si el SO mata la app a media espera no hubo
+    quién grabarlo). Lleva `startAt`.
   - `custom {name, ms, data?}` con `Thor.measure(name, ms, data: {...})`.
     Si la app ya tiene su medidor (una app de producción: `PerformanceTracker`), lo
     reenvía con UNA línea donde cierra cada traza:
@@ -284,7 +292,12 @@ diff de sesiones ya marca cambios en `app`.
   texto libre (`RedactionPolicy.secretsOnly()`, default de `Thor.run`).
   En texto libre (logs, errores, cuerpos cortados) también caen sin clave
   al lado: JWT sueltos, `Bearer …`, la contraseña de `https://u:pw@host`
-  y números de tarjeta (Luhn). Emails, ids, nombres, direcciones, teléfonos, rutas y
+  y números de tarjeta (Luhn). Los códigos de pago (QR/token de cobro:
+  claves `qr`, `qrCode`, `codigoPago`, `paymentCode`, `otp`…) son
+  secretos, y `RedactionPolicy.secretEndpoints` añade reglas por endpoint
+  para los que viajan en un genérico (por defecto, el `data` de
+  `monedero/pagar`; `SecretEndpointRule(r'/mi/ruta', keys: {'data'})`,
+  sin `keys` oculta el cuerpo entero). Emails, ids, nombres, direcciones, teléfonos, rutas y
   headers normales pasan tal cual: sin eso no se depura un servicio. Los
   valores de estado de blocs no se capturan por defecto.
 - **Modo estricto opt-in** para apps sensibles: el comportamiento anterior

@@ -965,6 +965,13 @@ class ThorReplay {
           },
           'src': p['source'],
           'at': event.origin,
+          // Diagnóstico completo del error: stack (hasta 60 frames/8 KB),
+          // contexto de Flutter y, en un desborde, widget y archivo.
+          if (p['stack'] is String) 'stack': _scrub(p['stack']! as String),
+          if (p['context'] is String) 'ctx': _scrub(p['context']! as String),
+          if (p['info'] is String) 'info': _scrub(p['info']! as String),
+          if (p['widget'] is String) 'widget': p['widget'],
+          if (p['file'] is String) 'file': p['file'],
         },
       ThorEventKind.network => _slimNetwork(p, event.origin),
       ThorEventKind.state => _slimState(p),
@@ -1140,7 +1147,18 @@ class ThorReplay {
   ///   legible: en una lista suele ser el id o el nombre del item
   ///   (`ValueKey(cliente.email)`).
   Map<String, Object?> _slimInteraction(Map<String, Object?> p) {
-    if (p['hidden'] == true) return {'g': p['gesture'], 'w': p['widget']};
+    // Gestos de arrastre: geometría sin datos (dirección, distancia,
+    // duración, coordenadas de pantalla).
+    final drag = <String, Object?>{
+      for (final k in const [
+        'dir', 'distance', 'durationMs', 'start', 'end', 'axis', 'edge', //
+        'obscure', 'keyboard', //
+      ])
+        if (p[k] != null) k: p[k],
+    };
+    if (p['hidden'] == true) {
+      return {'g': p['gesture'], 'w': p['widget'], ...drag};
+    }
     final label = p['label'] as String?;
     final key = p['key'] as String?;
     final mask = _maskText;
@@ -1158,6 +1176,7 @@ class ThorReplay {
               : WireframeBuilder.mask(label),
       'w': p['widget'],
       if (key != null && readable) 'k': clean(key),
+      ...drag,
     };
   }
 
@@ -1206,7 +1225,7 @@ class ThorReplay {
       'kind': p['kind'],
       for (final k in const [
         'ms', 'until', 'slow', 'frozen', 'worstMs', 'frames', 'nodes', //
-        'interrupted', 'capped', //
+        'interrupted', 'capped', 'startAt', //
       ])
         if (p[k] != null) k: p[k],
       for (final k in const ['screen', 'from', 'name'])
@@ -1361,9 +1380,20 @@ class ThorReplay {
       's': p['statusCode'],
       'd': p['durationMs'],
       ...failure,
-      if (failed || _diagnostic) 'body': body('responseBody'),
+      if (failed || _diagnostic) ...{
+        'body': body('responseBody'),
+        // El cuerpo cortado lo dice (tope de captura o recorte de la
+        // política), también en estricto.
+        if (p['responseBodyTruncated'] == true ||
+            ThorNetworkCapture.bodyWasCut(body('responseBody')))
+          'bt': true,
+      },
       if (_diagnostic) ...{
         if (p['requestBody'] != null) 'qb': body('requestBody'),
+        if (p['requestBody'] != null &&
+            (p['requestBodyTruncated'] == true ||
+                ThorNetworkCapture.bodyWasCut(body('requestBody'))))
+          'qbt': true,
         if (headers(p['requestHeaders']) case final h?) 'qh': h,
         if (headers(p['responseHeaders']) case final h?) 'rh': h,
       },

@@ -185,6 +185,12 @@ class Thor {
   /// - [anrThreshold]: la UI bloqueada este tiempo o más se graba como
   ///   `performance {kind: 'anr'}` (un isolate aparte hace ping; solo con
   ///   la app en primer plano; apagado en tests). `null` lo desactiva.
+  /// - [anrInDebug]: arranca el watchdog TAMBIÉN en debug (por defecto está
+  ///   apagado ahí: un breakpoint o un hot reload bloquean la UI isolate y
+  ///   darían ANR falsos). Pensado para builds de QA en debug. ADVERTENCIA:
+  ///   cualquier pausa del depurador contará como ANR. Las congeladas de
+  ///   frame de 2 s o más se reportan SIEMPRE como `performance
+  ///   {kind: 'freeze'}` (debug, profile y release), con o sin este flag.
   /// - [sessionTimeout]: si la app pasa en segundo plano este tiempo o más
   ///   (30 min por defecto), al volver la sesión se cierra (flush, marca
   ///   de fin, última subida del replay) y empieza una NUEVA con otro
@@ -217,6 +223,7 @@ class Thor {
     ThorCapturePolicy capture = const ThorCapturePolicy(),
     bool captureLogs = true,
     Duration? anrThreshold = const Duration(seconds: 2),
+    bool anrInDebug = false,
     Duration? sessionTimeout = const Duration(minutes: 30),
   }) async {
     if (!enabled) {
@@ -296,6 +303,7 @@ class Thor {
             AnrWatchdog.start(
               threshold: anrThreshold,
               active: _isForeground(),
+              allowInDebug: anrInDebug,
             ),
           );
         }

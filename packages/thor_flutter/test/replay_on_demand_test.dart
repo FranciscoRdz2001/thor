@@ -299,6 +299,109 @@ void main() {
     );
   });
 
+  test('truncated bodies always carry bt/qbt: clip, policy cut and strict',
+      () async {
+    await start(config: false);
+    final core = ThorCore.instance!;
+    final big = [for (var i = 0; i < 700; i++) 'producto-$i'];
+    core.recorder
+      // Cuerpo que SOLO el tope de 4 KB del replay corta (la captura no).
+      ..record(ThorEventKind.network, {
+        'method': 'GET',
+        'url': 'https://api.example.com/a',
+        'durationMs': 5,
+        'statusCode': 200,
+        'responseBody': {'items': big},
+        'requestBody': {'items': big},
+      })
+      // Recortado por la política (`…(+N)`), sin la marca de captura.
+      ..record(ThorEventKind.network, {
+        'method': 'GET',
+        'url': 'https://api.example.com/b',
+        'durationMs': 5,
+        'statusCode': 200,
+        'responseBody': {'note': '${'x' * 100}…(+900)'},
+        'responseBodyTruncated': true,
+      })
+      // Entero: no lleva marca.
+      ..record(ThorEventKind.network, {
+        'method': 'GET',
+        'url': 'https://api.example.com/c',
+        'durationMs': 5,
+        'statusCode': 200,
+        'responseBody': {'ok': true},
+        'requestBody': {'ok': true},
+      })
+      // Un fallo sube la sesión entera (está fuera de la muestra).
+      ..record(ThorEventKind.network, {
+        'method': 'GET',
+        'url': 'https://api.example.com/d',
+        'durationMs': 5,
+        'statusCode': 500,
+      });
+    await ThorReplay.stop();
+    final nets = dash.events('network');
+    expect(nets[0]['bt'], isTrue);
+    expect(nets[0]['qbt'], isTrue);
+    expect(nets[1]['bt'], isTrue);
+    expect(nets[2].containsKey('bt'), isFalse);
+    expect(nets[2].containsKey('qbt'), isFalse);
+  });
+
+  test('error context and drag geometry reach the replay', () async {
+    await start(config: false);
+    final core = ThorCore.instance!;
+    core.recorder
+      ..record(ThorEventKind.interaction, {
+        'gesture': 'scroll',
+        'widget': 'Scrollable',
+        'axis': 'vertical',
+        'dir': 'up',
+        'distance': 220,
+        'durationMs': 180,
+        'start': [100, 500],
+        'end': [100, 280],
+      })
+      ..record(ThorEventKind.error, {
+        'source': 'layout_overflow',
+        'type': 'FlutterError',
+        'message': 'A RenderFlex overflowed',
+        'stack': '#0 f (package:app/a.dart:1:1)\n#1 g (package:app/b.dart:2:2)',
+        'context': 'while rendering',
+        'widget': 'Row',
+        'file': 'file:///app/lib/cart_row.dart:84:15',
+      });
+    await ThorReplay.stop();
+    final err = dash.events('error').single;
+    expect(err['stack'], contains('#1 g'));
+    expect(err['ctx'], 'while rendering');
+    expect(err['widget'], 'Row');
+    expect(err['file'], 'file:///app/lib/cart_row.dart:84:15');
+    final scroll = dash.events('interaction').single;
+    expect(scroll['g'], 'scroll');
+    expect(scroll['dir'], 'up');
+    expect(scroll['distance'], 220);
+    expect(scroll['start'], [100, 500]);
+  });
+
+  test('strict diagnostic: bt/qbt also in the minimal format', () async {
+    await start(config: false, privacy: ThorPrivacy.strict);
+    ThorReplay.instance!.diagnostic = true;
+    ThorCore.instance!.recorder.record(ThorEventKind.network, {
+      'method': 'POST',
+      'url': 'https://api.example.com/p',
+      'durationMs': 5,
+      'statusCode': 500,
+      'requestBody': {'a': 'y' * 3000},
+      'requestBodyTruncated': true,
+      'responseBody': {'message': 'z' * 3000},
+    });
+    await ThorReplay.stop();
+    final net = dash.events('network').single;
+    expect(net['qbt'], isTrue);
+    expect(net['bt'], isTrue, reason: 'cortado por la política estricta');
+  });
+
   test('strict: an uploaded error message is scrubbed like logs', () async {
     await start(config: false, privacy: ThorPrivacy.strict);
     recordError();
