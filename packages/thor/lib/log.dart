@@ -28,8 +28,9 @@ import 'package:thor/src/thor_core.dart';
 /// Thor (sin secretos, ver `ThorCore.log`).
 ///
 /// Nivel: [level] en la escala de `package:logging` (900 warning, 1000
-/// severe…). Con el default `0` se deduce del texto, y una llamada con
-/// [error] cuenta como error.
+/// severe…). Con el default `0` se deduce del texto (los volcados de
+/// `onChange(` de un bloc y `error: null` no cuentan como error), y una
+/// llamada con [error] NO nulo cuenta como error.
 void log(
   String message, {
   DateTime? time,
@@ -55,12 +56,7 @@ void log(
   try {
     core.log(
       message,
-      level: level == 0
-          ? ThorLogLevel.infer(
-              message,
-              fallback: error != null ? ThorLogLevel.error : ThorLogLevel.info,
-            )
-          : ThorLogLevel.fromNumeric(level),
+      level: _levelOf(level, message, error),
       source: 'log',
       name: name,
       error: error,
@@ -69,4 +65,14 @@ void log(
   } on Object {
     // Loguear jamás debe tumbar a quien loguea.
   }
+}
+
+/// Nivel de un `log()`: la escala numérica de `dart:developer` manda
+/// (< 800 debug, 800 info, 900 warn, >= 1000 error); con el `0` por
+/// defecto, un [error] NO nulo es error y lo demás se deduce del texto
+/// con fallback info. Un `error: null` explícito no cuenta.
+ThorLogLevel _levelOf(int level, String message, Object? error) {
+  if (level != 0) return ThorLogLevel.fromNumeric(level);
+  if (error != null) return ThorLogLevel.error;
+  return ThorLogLevel.infer(message, fallback: ThorLogLevel.info);
 }

@@ -44,13 +44,47 @@ enum ThorLogLevel {
     caseSensitive: false,
   );
 
+  /// Campos que dicen "sin error" (`error: null`, `errorMessage: ''`,
+  /// `failure=false`): contienen la palabra pero NO son un error. Un
+  /// `Change { currentState: S(error: null) }` de un bloc las trae en cada
+  /// transición normal y marcaba como error el 100% de los logs.
+  static final _emptyErrorField = RegExp(
+    r'\b(error|errors|exception|failure|failed)\w*\s*[:=]\s*'
+    r'(null|none|false|0|""|\x27\x27|\[\]|\{\})(?![\w.])',
+    caseSensitive: false,
+  );
+
+  /// Callbacks de un `BlocObserver` volcados como texto
+  /// (`onChange(Cart, Change { … })`): son transiciones, no fallos, aunque
+  /// el estado se llame `…Failure`. `onError(` sí es un error.
+  static final _blocTrace = RegExp(
+    r'^\s*on(Change|Transition|Create|Close|Event)\(',
+  );
+
+  /// Respuesta HTTP fallida volcada por un interceptor de logs
+  /// (`ERROR RESPONSE [400]`): un 4xx es una respuesta del negocio (el
+  /// servidor rechazó la petición), no un fallo de la app → warn.
+  static final _httpClientError = RegExp(
+    r'ERROR\s*RESPONSE|RESPONSE\s*ERROR|ERROR\s*\[4\d\d\]',
+    caseSensitive: false,
+  );
+  static final _status4xx = RegExp(r'\b4\d\d\b');
+
   /// Nivel de un `print`/`debugPrint`, que no traen nivel: se deduce del
   /// texto ("Error al cobrar…" → error, "⚠ token por vencer" → warn) y lo
   /// demás es [fallback]. Heurística barata a propósito: se evalúa en cada
   /// línea de consola de la app.
   static ThorLogLevel infer(String message, {ThorLogLevel fallback = debug}) {
-    if (_errorHint.hasMatch(message)) return error;
-    if (_warnHint.hasMatch(message)) return warn;
+    if (message.startsWith('onError(')) return error;
+    if (_blocTrace.hasMatch(message)) return fallback;
+    if (_httpClientError.hasMatch(message) && _status4xx.hasMatch(message)) {
+      return warn;
+    }
+    final text = message.contains('rror') || message.contains('ail')
+        ? message.replaceAll(_emptyErrorField, '')
+        : message;
+    if (_errorHint.hasMatch(text)) return error;
+    if (_warnHint.hasMatch(text)) return warn;
     return fallback;
   }
 }

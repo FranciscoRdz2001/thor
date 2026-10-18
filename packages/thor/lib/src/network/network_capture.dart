@@ -370,6 +370,21 @@ class _SpyRequest implements HttpClientRequest {
     final requestHeaders = _headersToMap(inner.headers);
     final requestMime = inner.headers.contentType?.mimeType;
     final responseMime = response?.headers.contentType?.mimeType;
+    // Los secretos que solo se distinguen por el ENDPOINT (el QR de pago
+    // de `monedero/pagar` viaja en `data`) se tapan aquí, tras decodificar.
+    final path = inner.uri.path;
+    final requestBody = _requestBody.isEmpty
+        ? null
+        : redaction.redactEndpointBody(
+            path,
+            _decodeBody(_requestBody.toBytes(), requestMime, redaction),
+          );
+    final decodedResponse = responseBody == null || responseBody.isEmpty
+        ? null
+        : redaction.redactEndpointBody(
+            path,
+            _decodeBody(responseBody, responseMime, redaction),
+          );
     final payload = <String, Object?>{
       'method': inner.method,
       'url': _urlText(inner.uri, redaction),
@@ -377,9 +392,9 @@ class _SpyRequest implements HttpClientRequest {
       'requestHeaders': redaction.redactFlatMap(requestHeaders),
       'requestBytes': _requestTotal,
       if (_requestBody.isNotEmpty) ...{
-        'requestBody':
-            _decodeBody(_requestBody.toBytes(), requestMime, redaction),
-        if (_requestTotal > _requestBody.length) 'requestBodyTruncated': true,
+        'requestBody': requestBody,
+        if (_requestTotal > _requestBody.length || _cutByPolicy(requestBody))
+          'requestBodyTruncated': true,
         if (!_captures(_requestBody.toBytes(), requestMime, redaction))
           'requestBodyOmitted': true,
       },
@@ -392,11 +407,14 @@ class _SpyRequest implements HttpClientRequest {
         'responseBytes':
             (responseTotal ?? 0) > 0 ? responseTotal : response.contentLength,
         if (responseBody != null && responseBody.isNotEmpty) ...{
-          'responseBody': _decodeBody(responseBody, responseMime, redaction),
+          'responseBody': decodedResponse,
           if (!_captures(responseBody, responseMime, redaction))
             'responseBodyOmitted': true,
         },
-        if (responseTruncated) 'responseBodyTruncated': true,
+        // Explícito: cortado por el tope de captura O por el recorte de
+        // valores de la política (`…(+N)`). El panel lo muestra.
+        if (responseTruncated || _cutByPolicy(decodedResponse))
+          'responseBodyTruncated': true,
       },
       if (error != null) ...{
         'error': error.runtimeType.toString(),
@@ -427,10 +445,13 @@ class _SpyRequest implements HttpClientRequest {
           (k, v) => parts.add("-H ${_sq('$k: $v')}"),
         );
     if (_requestBody.isNotEmpty) {
-      final body = _decodeBody(
-        _requestBody.toBytes(),
-        inner.headers.contentType?.mimeType,
-        redaction,
+      final body = redaction.redactEndpointBody(
+        inner.uri.path,
+        _decodeBody(
+          _requestBody.toBytes(),
+          inner.headers.contentType?.mimeType,
+          redaction,
+        ),
       );
       if (body is String) parts.add('-d ${_sq(body)}');
       if (body is Map || body is List) {
@@ -590,6 +611,18 @@ class _SpyRequest implements HttpClientRequest {
       return false;
     }
   }
+
+  static final _cutMarker = RegExp(r'…\(\+\d+\)$');
+
+  /// ¿Algún texto del cuerpo ya decodificado quedó recortado por la
+  /// política (`…(+N)`, ver `RedactionPolicy.maxValueLength`)? Así la marca
+  /// `*BodyTruncated` no depende solo del tope de bytes de la captura.
+  static bool _cutByPolicy(Object? body) => switch (body) {
+        final String s => _cutMarker.hasMatch(s),
+        final Map<Object?, Object?> m => m.values.any(_cutByPolicy),
+        final List<Object?> l => l.any(_cutByPolicy),
+        _ => false,
+      };
 
   /// Decodifica un cuerpo si su content-type está permitido; si no, solo
   /// deja constancia del tamaño. JSON se redacta estructuralmente (también

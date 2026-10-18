@@ -208,6 +208,44 @@ void main() {
       await core.dispose();
     });
 
+    test('shim log(): onChange de bloc y error: null no son error', () async {
+      final core = await ThorCore.init();
+      thor_log.log('onChange(CartBloc, Change { currentState: S(error: null), '
+          'nextState: S(status: failure) })');
+      thor_log.log('onTransition(PayBloc, loading → failure)');
+      thor_log.log('ERROR RESPONSE [400] /monedero/pagar');
+      thor_log.log('ERROR RESPONSE [503] /x');
+      thor_log.log('fino', level: 500);
+      thor_log.log('onError(CartBloc, Boom, #0 main)');
+      thor_log.log('detalle', level: 1000);
+      thor_log.log('con error', error: StateError('x'));
+      final levels = core.store
+          .ofKind(ThorEventKind.log)
+          .map((e) => e.payload['level'])
+          .toList();
+      expect(levels, [
+        'info',
+        'info',
+        'warn',
+        'error',
+        'debug',
+        'error',
+        'error',
+        'error',
+      ]);
+      await core.dispose();
+    });
+
+    test('infer: error: null no cuenta, error real sí', () {
+      expect(ThorLogLevel.infer('S(error: null)'), ThorLogLevel.debug);
+      expect(ThorLogLevel.infer('errorMessage: ""'), ThorLogLevel.debug);
+      expect(ThorLogLevel.infer('error: timeout'), ThorLogLevel.error);
+      expect(
+        ThorLogLevel.infer('failed: false, error: null'),
+        ThorLogLevel.debug,
+      );
+    });
+
     test('shim log(): mapea niveles y sin Thor no hace nada', () async {
       // Sin init: no lanza ni graba.
       thor_log.log('antes de Thor');

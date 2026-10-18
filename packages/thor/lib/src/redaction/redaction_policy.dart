@@ -16,6 +16,39 @@ enum RedactionMode {
   allowlist,
 }
 
+/// Regla de secreto por ENDPOINT: en las peticiones cuya ruta casa con
+/// [pathPattern], el valor de las claves [keys] (a cualquier profundidad,
+/// en el cuerpo de la petición y en el de la respuesta) es un secreto.
+///
+/// Sirve para secretos que no se distinguen por el NOMBRE de la clave: el
+/// código del QR de pago que devuelve `monedero/pagar` viaja en un
+/// genérico `data`. Con [keys] vacío se oculta el cuerpo entero.
+class SecretEndpointRule {
+  /// Crea una regla. [pathPattern] es una expresión regular (sin
+  /// distinguir mayúsculas) que se busca en la RUTA de la URL, sin query.
+  const SecretEndpointRule(this.pathPattern, {this.keys = const {}});
+
+  /// Expresión regular que se busca en la ruta.
+  final String pathPattern;
+
+  /// Claves (case-insensitive) cuyo valor es secreto; vacío = todo el cuerpo.
+  final Set<String> keys;
+
+  static final _compiled = <String, RegExp>{};
+
+  /// ¿Aplica a [path]? Una expresión inválida no casa con nada (y no lanza
+  /// dentro del interceptor de red).
+  bool matches(String path) {
+    try {
+      return (_compiled[pathPattern] ??=
+              RegExp(pathPattern, caseSensitive: false))
+          .hasMatch(path);
+    } on FormatException {
+      return false;
+    }
+  }
+}
+
 /// Política de redacción de Thor.
 ///
 /// Dos modos ([RedactionMode]):
@@ -50,6 +83,7 @@ class RedactionPolicy {
     this.maxValueLength = 2048,
     this.captureStateValues = false,
     this.mode = RedactionMode.allowlist,
+    this.secretEndpoints = defaultSecretEndpoints,
   });
 
   /// Solo secretos: el default de `Thor.run`. Headers, query, cuerpos
@@ -58,10 +92,12 @@ class RedactionPolicy {
   const RedactionPolicy.secretsOnly({
     int maxValueLength = 2048,
     bool captureStateValues = false,
+    List<SecretEndpointRule> secretEndpoints = defaultSecretEndpoints,
   }) : this(
           maxValueLength: maxValueLength,
           captureStateValues: captureStateValues,
           mode: RedactionMode.secretsOnly,
+          secretEndpoints: secretEndpoints,
         );
 
   /// Política estricta (opt-in para apps sensibles): allowlist con solo
@@ -79,6 +115,74 @@ class RedactionPolicy {
 
   /// Modo de la política.
   final RedactionMode mode;
+
+  /// Reglas de secreto por endpoint (ver [SecretEndpointRule]). Se
+  /// aplican a los cuerpos de red en los dos modos. Pasar una lista propia
+  /// REEMPLAZA a [defaultSecretEndpoints]; para sumar:
+  /// `[...defaultSecretEndpoints, mía]`.
+  final List<SecretEndpointRule> secretEndpoints;
+
+  /// Reglas por defecto: el código/QR de pago que devuelve `pagar` del
+  /// monedero (`data`, formato `<monedero>-<código>`) es un secreto de
+  /// pago, no un dato de depuración.
+  static const defaultSecretEndpoints = [
+    SecretEndpointRule('monedero[^?]*/pagar', keys: {'data'}),
+    SecretEndpointRule(
+      r'/(codigo-?pago|payment-?code|qr-?pago|pago-?qr)(/|$)',
+      keys: {'data'},
+    ),
+  ];
+
+  /// [body] (JSON decodificado o texto) con el valor de las claves de
+  /// secreto de las reglas de [secretEndpoints] que casan con [path]
+  /// vuelto [redactedMarker]. Sin regla que case devuelve [body] tal cual
+  /// (misma instancia).
+  Object? redactEndpointBody(String path, Object? body) {
+    if (body == null || secretEndpoints.isEmpty) return body;
+    Set<String>? keys;
+    var all = false;
+    for (final rule in secretEndpoints) {
+      if (!rule.matches(path)) continue;
+      if (rule.keys.isEmpty) {
+        all = true;
+      } else {
+        (keys ??= <String>{}).addAll(rule.keys.map(_normalize));
+      }
+    }
+    if (all) return redactedMarker;
+    if (keys == null) return body;
+    return _redactKeys(body, keys);
+  }
+
+  static Object? _redactKeys(Object? v, Set<String> keys) => switch (v) {
+        final Map<Object?, Object?> m => {
+            for (final MapEntry(:key, value: x) in m.entries)
+              '$key': keys.contains(_normalize('$key'))
+                  ? redactedMarker
+                  : _redactKeys(x, keys),
+          },
+        final List<Object?> l => [for (final x in l) _redactKeys(x, keys)],
+        final String s => _redactKeysInText(s, keys),
+        _ => v,
+      };
+
+  // Cuerpo que no se pudo decodificar (JSON cortado por el tope): se
+  // buscan los pares `"clave": "valor"` a mano; una comilla sin cerrar
+  // llega hasta el final, igual que en [_pairValue].
+  static String _redactKeysInText(String text, Set<String> keys) {
+    var out = text;
+    for (final key in keys) {
+      out = out.replaceAllMapped(
+        RegExp(
+          '("${RegExp.escape(key)}"\\s*:\\s*)'
+          r'(?:"(?:[^"\\]|\\.)*(?:"|$)|[^\s,}\]]+)',
+          caseSensitive: false,
+        ),
+        (m) => '${m[1]}"$redactedMarker"',
+      );
+    }
+    return out;
+  }
 
   /// ¿Tapa solo secretos ([RedactionMode.secretsOnly])?
   bool get isSecretsOnly => mode == RedactionMode.secretsOnly;
@@ -171,7 +275,12 @@ class RedactionPolicy {
     // Comer, prueba e2e).
     'api_?key|app_?key|access_?key|subscription_?key|signature|session_?id|'
     'cvv|cvc|security_?code|card_?number|credit_?card|cc_?num|tarjeta|'
-    'private_?key|jwt|bearer|credential|otp_?code',
+    'private_?key|jwt|bearer|credential|otp_?code|'
+    // Códigos de pago: el QR/token que el cajero escanea para cobrar es
+    // dinero en un string (visto: `monedero/pagar` → `data`).
+    r'^qr(_?code|_?token|_?data|_?pago)?$|qr_?(code|token|pago)|'
+    'codigo_?(pago|qr|cobro)|payment_?(code|token|qr)|pago_?(code|token|qr)|'
+    'one_?time_?(code|pass)',
   );
 
   /// Copia de [value] (JSON: mapas, listas, primitivos) donde el valor de
