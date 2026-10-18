@@ -93,6 +93,27 @@ patrones que un humano tardaría en ver:
   para `screen_load`, ≈2 ns/frame para evaluar un lote sano, y el
   watchdog cuesta <1-3 % de throughput en la UI isolate, dentro del ruido
   de medición).
+- **Salud visible de la UI** (`UiHealthCapture`, instalada por `Thor.run`;
+  lo que el usuario ve mal aunque no haya excepción). Un recorrido del
+  árbol PINTADO cada segundo, solo si hubo frames desde el anterior o hay
+  algo en observación, y nunca en segundo plano (por frame solo suma un
+  entero):
+  - `performance stuck_loading {screen, ms}`: un spinner, barra o
+    esqueleto (`*Shimmer*`/`*Skeleton*`) visible 8 s o más en la misma
+    pantalla (un progreso con `value` no cuenta).
+  - `performance blank_screen {screen, ms, nodes}`: pantalla conocida, sin
+    nada cargando y ≤ 3 textos/imágenes/campos pintados durante 5 s. Las
+    pantallas con vista nativa (cámara, mapa, webview) se excluyen.
+  - `error` con `source: ui_error`: un `AlertDialog`, `SnackBar`,
+    `MaterialBanner`, `*Dialog` o `*Toast` que APARECE con texto de fallo
+    ("no se pudo", "error", "intenta de nuevo"…). Si el texto es neutro es
+    `environment ui_message {widget, text}`. Texto sin secretos (y sin
+    datos personales con la política estricta).
+  - `error` con `source: image_error {url, statusCode?}`: una imagen que no
+    cargó, incluso con `errorBuilder` (que se traga la excepción: se ve en
+    la capa de red). Misma URL: una vez cada 5 s.
+  - `layout_overflow` sigue viniendo de la aserción de Flutter, así que
+    solo existe en debug/profile: en release el framework no avisa.
 - **Contexto del dispositivo** (eventos `environment`, `p.signal`; en
   journal, reporte, narrador y replay, sin plugins y sin trabajo por frame:
   son avisos que Flutter ya manda, y cada valor solo se graba si cambió):
