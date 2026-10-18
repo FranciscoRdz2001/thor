@@ -56,6 +56,33 @@ class ThorSession {
   /// Versión, build, flavor, commit… (lo llena el adaptador de Flutter).
   final Map<String, String> appInfo;
 
+  /// Versión de la app (`appInfo['version']`), si la app la reportó.
+  String? get appVersion => appInfo[appVersionKey];
+
+  /// Build / número de compilación (`appInfo['build']`), si se reportó.
+  String? get appBuild => appInfo[appBuildKey];
+
+  /// Clave de [appInfo] para la versión (la que ve el dash en `meta.app`).
+  static const appVersionKey = 'version';
+
+  /// Clave de [appInfo] para el build (la que ve el dash en `meta.app`).
+  static const appBuildKey = 'build';
+
+  /// Combina [appInfo] con [version]/[build] explícitos (que ganan sobre
+  /// las claves `version`/`build` del mapa). Valores vacíos se ignoran:
+  /// "sin versión" es mejor que `version: ""`.
+  static Map<String, String> mergeAppInfo(
+    Map<String, String> appInfo, {
+    String? version,
+    String? build,
+  }) =>
+      {
+        ...appInfo,
+        if (version != null && version.trim().isNotEmpty)
+          appVersionKey: version.trim(),
+        if (build != null && build.trim().isNotEmpty) appBuildKey: build.trim(),
+      };
+
   /// Modelo, OS, pantalla, escala de texto, locale… (ídem).
   final Map<String, String> deviceInfo;
 

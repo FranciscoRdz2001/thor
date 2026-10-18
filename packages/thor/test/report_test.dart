@@ -186,6 +186,31 @@ void main() {
       if (tmp.existsSync()) await tmp.delete(recursive: true);
     });
 
+    test('mergeAppInfo: explícitos ganan, vacíos se ignoran', () {
+      expect(
+        ThorSession.mergeAppInfo(
+          {'version': 'x', 'flavor': 'qa'},
+          version: ' 2.0.0 ',
+          build: '',
+        ),
+        {'version': '2.0.0', 'flavor': 'qa'},
+      );
+      expect(ThorSession.mergeAppInfo({'build': '5'}), {'build': '5'});
+    });
+
+    test('markdown abre App con versión y build', () async {
+      final core = await ThorCore.init(
+        appInfo: ThorSession.mergeAppInfo(
+          {'flavor': 'qa'},
+          version: '1.2.3',
+          build: '45',
+        ),
+      );
+      final md = ThorReport.fromCore(core).toMarkdown();
+      expect(md, contains('- App: v1.2.3 build 45 · {flavor: qa}'));
+      await core.dispose();
+    });
+
     test('roundtrip: writeTo produce .gz legible con schemaVersion', () async {
       final core = await ThorCore.init(
         appInfo: {'version': '1.2.3', 'flavor': 'qa'},

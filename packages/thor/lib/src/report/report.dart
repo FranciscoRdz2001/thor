@@ -148,6 +148,26 @@ class ThorReport {
         'timeline': [for (final e in timeline) e.toJson()],
       };
 
+  /// Versión y build primero (lo que QA y dev buscan para ubicar el
+  /// release), luego el resto de `appInfo` tal cual.
+  static String _appLine(ThorSession session) {
+    final info = session.appInfo;
+    final rest = {
+      for (final e in info.entries)
+        if (e.key != ThorSession.appVersionKey &&
+            e.key != ThorSession.appBuildKey)
+          e.key: e.value,
+    };
+    final version = session.appVersion;
+    final build = session.appBuild;
+    if (version == null && build == null) return '$info';
+    final head = [
+      if (version != null) 'v$version',
+      if (build != null) 'build $build',
+    ].join(' ');
+    return rest.isEmpty ? head : '$head · $rest';
+  }
+
   /// Markdown listo para pegar en un ticket/chat: encabezado + pasos +
   /// agregados clave. El JSON va aparte como adjunto.
   String toMarkdown() {
@@ -161,7 +181,7 @@ class ThorReport {
       ..writeln('- Origen: ${origin.name}')
       ..writeln('- Sesión: `${session.sessionId}` · '
           'instalación `${session.installId}`')
-      ..writeln('- App: ${session.appInfo}')
+      ..writeln('- App: ${_appLine(session)}')
       ..writeln('- Dispositivo: ${session.deviceInfo}');
     final userId = aggregates['userId'];
     if (userId != null) b.writeln('- Usuario: `$userId`');

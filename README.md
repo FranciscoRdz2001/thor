@@ -80,6 +80,44 @@ patrones que un humano tardaría en ver:
   campos y la aserción van marcados `TODO` — Thor sabe qué pasó, no qué
   DEBERÍA pasar, y no filtra contenido de campos al test.
 
+## Versiones y releases
+
+Cada sesión lleva la versión y el build de la app: `meta.app.version` /
+`meta.app.build` en el replay, `session.appInfo` en el journal y el
+reporte (`- App: v1.4.2 build 87 · {flavor: qa}`). El replay también
+graba `meta.redaction` (`secretsOnly` | `strict`) para que el dash sepa
+qué política se aplicó.
+
+```dart
+Thor.run(
+  body,
+  appVersion: '1.4.2', // -> appInfo['version']
+  appBuild: '87',      // -> appInfo['build']
+  appInfo: {'flavor': 'qa'},
+);
+```
+
+`appVersion`/`appBuild` ganan sobre las claves `version`/`build` de
+`appInfo`; vacíos se ignoran. Thor **no** lee la versión solo: eso
+exigiría `package_info_plus` (plugin nativo) en el núcleo y rompe
+"apagado = inofensivo". Es un one-liner en la app, que ya tiene el
+plugin o puede sumarlo:
+
+```dart
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final info = await PackageInfo.fromPlatform();
+  await Thor.run(
+    () async => runApp(const MyApp()),
+    appVersion: info.version,
+    appBuild: info.buildNumber,
+  );
+}
+```
+
+Para comparar releases: `ThorSession.appVersion` / `appBuild`, y el
+diff de sesiones ya marca cambios en `app`.
+
 ## Principios
 
 - **3 líneas de integración**, nada por ruta/bloc/petición.

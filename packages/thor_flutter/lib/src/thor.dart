@@ -150,6 +150,12 @@ class Thor {
   ///   `RedactionPolicy.strict()` (allowlist + sin datos con forma
   ///   personal en rutas, logs, errores y labels).
   /// - [appInfo] / [installId]: identidad para la cabecera de sesión.
+  /// - [appVersion] / [appBuild]: versión y número de build de la app
+  ///   (`1.4.2` / `87`). Van a `appInfo['version']` / `appInfo['build']`,
+  ///   o sea a `meta.app` del replay, al journal y a la línea "App:" del
+  ///   reporte. Ganan sobre esas mismas claves en [appInfo]. Thor no lee
+  ///   la versión por su cuenta (eso exigiría `package_info_plus` en el
+  ///   núcleo): la app la pasa; ver el README, sección "Versiones".
   /// - [capture]: tope de ráfagas de estado por bloc y aligerado de las
   ///   peticiones exitosas en el journal (ver [ThorCapturePolicy]).
   /// - [infraPackages]: paquetes propios que son infraestructura (tu SDK
@@ -170,6 +176,8 @@ class Thor {
     BufferQuotas? quotas,
     String? installId,
     Map<String, String> appInfo = const {},
+    String? appVersion,
+    String? appBuild,
     Set<String> infraPackages = const {},
     ThorCapturePolicy capture = const ThorCapturePolicy(),
     bool captureLogs = true,
@@ -207,7 +215,11 @@ class Thor {
           redaction: redaction,
           quotas: quotas,
           installId: installId,
-          appInfo: appInfo,
+          appInfo: ThorSession.mergeAppInfo(
+            appInfo,
+            version: appVersion,
+            build: appBuild,
+          ),
           deviceInfo: _collectDeviceInfo(),
           capture: capture,
         );

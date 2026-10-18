@@ -166,6 +166,38 @@ void main() {
     expect(body, contains('Contraseña'), reason: 'el label es copy');
   });
 
+  testWidgets('meta carries app version/build and the redaction mode',
+      (tester) async {
+    ThorCore.debugReset();
+    await ThorCore.init(
+      appInfo: ThorSession.mergeAppInfo(
+        const {'flavor': 'qa'},
+        version: '1.4.2',
+        build: '87',
+      ),
+    );
+    await tester.pumpWidget(app('Hola'));
+    await tester.runAsync(
+      () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+    );
+    final maps = (await records(tester)).whereType<Map<String, Object?>>();
+    final meta = maps.firstWhere((r) => r['t'] == 'meta');
+    expect(meta['app'], {'flavor': 'qa', 'version': '1.4.2', 'build': '87'});
+    expect(meta['redaction'], 'secretsOnly');
+  });
+
+  testWidgets('meta redaction is strict when the app asked for it',
+      (tester) async {
+    ThorCore.debugReset();
+    await ThorCore.init(redaction: const RedactionPolicy.strict());
+    await tester.pumpWidget(app('Hola'));
+    await tester.runAsync(
+      () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+    );
+    final maps = (await records(tester)).whereType<Map<String, Object?>>();
+    expect(maps.firstWhere((r) => r['t'] == 'meta')['redaction'], 'strict');
+  });
+
   testWidgets('user identity: uid in meta when known, user record on change',
       (tester) async {
     Thor.setUser('cli_1');

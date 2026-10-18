@@ -219,4 +219,28 @@ void sessionLinkTests() {
     c1();
     c2();
   });
+
+  test('appVersion/appBuild llegan a session.appInfo y ganan sobre appInfo',
+      () async {
+    await Thor.run(
+      () async {},
+      appInfo: {'flavor': 'qa', 'version': 'viejo'},
+      appVersion: '1.4.2',
+      appBuild: '87',
+    );
+    final session = ThorCore.instance!.session;
+    expect(
+      session.appInfo,
+      {'flavor': 'qa', 'version': '1.4.2', 'build': '87'},
+    );
+    expect(session.appVersion, '1.4.2');
+    expect(session.appBuild, '87');
+  });
+
+  test('sin appVersion/appBuild: appInfo intacto', () async {
+    await Thor.run(() async {}, appInfo: {'flavor': 'qa'});
+    final session = ThorCore.instance!.session;
+    expect(session.appInfo, {'flavor': 'qa'});
+    expect(session.appVersion, isNull);
+  });
 }

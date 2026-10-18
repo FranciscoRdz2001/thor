@@ -574,6 +574,9 @@ class ThorReplay {
       'h': size.height,
       'dpr': view.devicePixelRatio,
       'app': _core.session.appInfo,
+      // Con qué política se grabó: el dash lo muestra y avisa cuándo
+      // espera ver datos personales (secretsOnly) y cuándo no (strict).
+      'redaction': _strict ? 'strict' : 'secretsOnly',
       if (_core.userId != null) 'uid': _core.userId,
       if (_core.userProps != null) 'uprops': _core.userProps,
     });
