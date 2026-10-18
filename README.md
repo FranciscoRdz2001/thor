@@ -82,7 +82,8 @@ patrones que un humano tardaría en ver:
     solo ping en vuelo, solo con la app en `resumed` (en segundo plano su
     timer se cancela: no despierta al proceso), no confunde una suspensión
     del SO con un bloqueo, no mantiene viva la app y está apagado en tests
-    y con Thor apagado. Solo ve los ANR que terminan (si el SO mata la app
+    y con Thor apagado, y también en debug (`kDebugMode`: un breakpoint o
+    un hot reload bloquean solo la UI isolate y serían ANR falsos). Solo ve los ANR que terminan (si el SO mata la app
     a media espera no hubo quién grabarlo).
   - `custom {name, ms, data?}` con `Thor.measure(name, ms, data: {...})`.
     Si la app ya tiene su medidor (una app de producción: `PerformanceTracker`), lo

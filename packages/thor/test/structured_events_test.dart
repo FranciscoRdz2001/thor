@@ -66,6 +66,19 @@ void main() {
       expect(of(ThorEventKind.track).single.payload['props'], isNotNull);
     });
 
+    test('un objeto cuyo toString trae secretos no los cuela en track/log', () {
+      ThorCore.instance!
+        ..track('falló', {'err': _Leaky(), 'lista': [_Leaky()]})
+        ..log('x', data: {'ex': _Leaky()});
+      final text = [
+        ...of(ThorEventKind.track),
+        ...of(ThorEventKind.log),
+      ].map((e) => jsonEncode(e.payload)).join();
+      expect(text, isNot(contains('hunter2')));
+      expect(text, isNot(contains('abc.def.ghi')));
+      expect(text, contains('Leaky'));
+    });
+
     test('el narrador cuenta tracks y data de logs', () {
       final core = ThorCore.instance!
         ..track('checkout_ok', {'total': 99})
@@ -94,4 +107,10 @@ void main() {
       expect(text, contains('"data":{"a":1}'));
     });
   });
+}
+
+class _Leaky {
+  @override
+  String toString() =>
+      'Leaky(password=hunter2, Authorization: Bearer abc.def.ghi)';
 }

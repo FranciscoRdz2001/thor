@@ -225,5 +225,12 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 300));
       expect(perf('anr'), isEmpty);
     });
+
+    test('stop durante el arranque no deja un isolate huérfano', () async {
+      final starting = AnrWatchdog.start(force: true);
+      AnrWatchdog.stop();
+      await starting;
+      expect(AnrWatchdog.running, isFalse);
+    });
   });
 }

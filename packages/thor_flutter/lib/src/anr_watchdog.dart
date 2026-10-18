@@ -23,7 +23,9 @@ import 'package:thor/thor.dart';
 ///   ANR (el watchdog detecta que su propio reloj saltó y descarta).
 /// - No mantiene viva a la app: es un isolate de servicio que muere con el
 ///   proceso, y `stop` lo mata explícitamente.
-/// - Apagado en tests (`FLUTTER_TEST`) y con Thor apagado (`Thor.run` nunca
+/// - Apagado en debug (`kDebugMode`: un breakpoint o un hot reload bloquean
+///   solo la UI isolate y darían ANR falsos), en tests (`FLUTTER_TEST`) y
+///   con Thor apagado (`Thor.run` nunca
 ///   lo arranca). Cuesta un isolate extra (~1-2 MB); `anrThreshold: null`
 ///   en `Thor.run` lo desactiva.
 ///
@@ -48,6 +50,10 @@ class AnrWatchdog {
   }) async {
     if (_isolate != null || _rx != null) return;
     if (!force && Platform.environment.containsKey('FLUTTER_TEST')) return;
+    // Con el depurador, una pausa en un breakpoint o un hot reload largo
+    // bloquean SOLO la UI isolate mientras el watchdog sigue vivo: sería un
+    // ANR falso. En debug no arranca (los tiempos de debug no valen igual).
+    if (!force && kDebugMode) return;
     final thresholdMs = threshold.inMilliseconds < 100
         ? 100
         : threshold.inMilliseconds;
@@ -58,16 +64,21 @@ class AnrWatchdog {
     _rx = rx;
     rx.listen(_onMessage);
     try {
-      _isolate = await Isolate.spawn<List<Object?>>(
+      final spawned = await Isolate.spawn<List<Object?>>(
         _watchdogMain,
         [rx.sendPort, thresholdMs, intervalMs],
         debugName: 'thor-anr',
         errorsAreFatal: false,
       );
+      if (!identical(_rx, rx)) {
+        spawned.kill(priority: Isolate.immediate);
+        return;
+      }
+      _isolate = spawned;
     } on Object {
       // Plataforma sin isolates (web) o sin recursos: Thor sigue sin ANR.
       rx.close();
-      _rx = null;
+      if (identical(_rx, rx)) _rx = null;
     }
   }
 
