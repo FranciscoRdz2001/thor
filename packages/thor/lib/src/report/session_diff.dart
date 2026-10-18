@@ -165,6 +165,7 @@ class ThorSessionDiff {
                 e.payload['signal'],
                 if (e.payload['value'] != null) e.payload['value'],
                 if (e.payload['state'] != null) e.payload['state'],
+                if (e.payload['online'] != null) e.payload['online'],
               ].join(':'),
         };
     final sa = signals(a.timeline);

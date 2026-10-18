@@ -116,7 +116,7 @@ class ThorNarrator {
               final state = event.payload['state'];
               if (state == 'paused') nested(event, '· App al fondo');
               if (state == 'resumed') nested(event, '· App de regreso');
-            case 'memoryPressure':
+            case 'memory_pressure' || 'memoryPressure':
               nested(event, '⚠ Presión de memoria del sistema');
             case 'brightness':
               nested(event, '· Tema del sistema: ${event.payload['value']}');
@@ -126,8 +126,17 @@ class ThorNarrator {
                 event,
                 id == null ? '· Sesión sin usuario' : '· Usuario: $id',
               );
-            case 'textScale':
+            case 'text_scale' || 'textScale':
               nested(event, '· Escala de texto: ${event.payload['value']}');
+            case 'locale':
+              nested(event, '· Idioma del sistema: ${event.payload['value']}');
+            case 'connectivity':
+              nested(
+                event,
+                event.payload['online'] == false
+                    ? '⚠ Sin conexión (inferido de las peticiones)'
+                    : '· Conexión restablecida',
+              );
             default:
               nested(event, '· ${event.payload}');
           }

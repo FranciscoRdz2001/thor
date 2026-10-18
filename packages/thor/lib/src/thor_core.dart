@@ -8,6 +8,7 @@ import 'package:meta/meta.dart';
 import 'package:thor/src/model/event.dart';
 import 'package:thor/src/model/log_level.dart';
 import 'package:thor/src/model/session.dart';
+import 'package:thor/src/network/connectivity_inference.dart';
 import 'package:thor/src/network/raw_network_store.dart';
 import 'package:thor/src/persistence/journal.dart';
 import 'package:thor/src/recorder.dart';
@@ -62,6 +63,7 @@ class ThorCore {
 
   final Map<String, ThorContextProvider> _contextProviders = {};
   void Function()? _unsubscribeJournal;
+  void Function()? _unsubscribeConnectivity;
 
   /// Sesión previa recuperada en [init]; si `endedCleanly == false`, la app
   /// murió y este es el material del reporte de crash.
@@ -123,7 +125,10 @@ class ThorCore {
       redaction: redaction,
       capture: capture,
       journal: journal,
-    )..recoveredPrevious = recovered;
+    )
+      ..recoveredPrevious = recovered
+      // Sin plugin: "sin conexión" se infiere de las peticiones capturadas.
+      .._unsubscribeConnectivity = ConnectivityInference.install(recorder);
 
     if (journal != null) {
       // Los errores van a disco de inmediato: si la app está por morir,
@@ -381,6 +386,7 @@ class ThorCore {
     // hallazgo, no ruido.
     recorder.flushBursts();
     _unsubscribeJournal?.call();
+    _unsubscribeConnectivity?.call();
     await journal?.close();
     if (identical(_instance, this)) _instance = null;
   }

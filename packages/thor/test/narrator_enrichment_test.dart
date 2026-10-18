@@ -108,6 +108,26 @@ void main() {
       expect(steps, contains('Escala de texto: 1.30'));
     });
 
+    test('señales de entorno con los nombres del contrato', () {
+      final steps = ThorNarrator.narrate([
+        _e(0, ThorEventKind.navigation, {'action': 'push', 'to': 'A'}),
+        _e(1, ThorEventKind.environment, {'signal': 'memory_pressure'}),
+        _e(
+          2,
+          ThorEventKind.environment,
+          {'signal': 'text_scale', 'value': 1.3},
+        ),
+        _e(
+          3,
+          ThorEventKind.environment,
+          {'signal': 'locale', 'value': 'en_US'},
+        ),
+      ]);
+      expect(steps, contains('Presión de memoria'));
+      expect(steps, contains('Escala de texto: 1.3'));
+      expect(steps, contains('Idioma del sistema: en_US'));
+    });
+
     test('evento de jank narrado con conteo y peor frame', () {
       final steps = ThorNarrator.narrate([
         _e(0, ThorEventKind.navigation, {'action': 'push', 'to': 'A'}),

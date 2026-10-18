@@ -833,6 +833,7 @@ class ThorReplay {
       ThorEventKind.log => _slimLog(p),
       ThorEventKind.track => _slimTrack(p),
       ThorEventKind.performance => _slimPerformance(p),
+      ThorEventKind.environment => _slimEnvironment(p),
       _ => null,
     };
     if (slim == null) return;
@@ -1073,6 +1074,15 @@ class ThorReplay {
       if (p['data'] != null) 'data': _slimData(p['data']),
     };
   }
+
+  /// Contexto del dispositivo (`lifecycle`, `memory_pressure`, `locale`,
+  /// `text_scale`, `brightness`, `connectivity`): solo la señal y su valor
+  /// escalar. El `user` no llega aquí (tiene registro propio).
+  Map<String, Object?> _slimEnvironment(Map<String, Object?> p) => {
+        'signal': p['signal'],
+        for (final k in const ['state', 'value', 'online'])
+          if (p[k] != null) k: p[k] is String ? _scrub(p[k]! as String) : p[k],
+      };
 
   /// Campos estructurados (`data` de un log, `props` de un track): tal
   /// cual (solo secretos tapados) o re-redactados en estricto.

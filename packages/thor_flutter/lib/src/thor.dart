@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 import 'package:stack_trace/stack_trace.dart';
 import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/anr_watchdog.dart';
+import 'package:thor_flutter/src/environment_capture.dart';
 import 'package:thor_flutter/src/error_capture.dart';
 import 'package:thor_flutter/src/interaction_capture.dart';
 import 'package:thor_flutter/src/log_capture.dart';
@@ -323,7 +324,7 @@ class Thor {
   }
 
   static void _watchLifecycle() {
-    WidgetsBinding.instance.addObserver(_LifecycleWatcher());
+    EnvironmentCapture.install();
   }
 
   // ── Delegados de conveniencia hacia el núcleo (no-op si apagado) ──
@@ -462,55 +463,4 @@ class ThorSessionInfo {
 
   /// Usuario fijado con [Thor.setUser]; `null` = anónimo.
   final String? userId;
-}
-
-class _LifecycleWatcher with WidgetsBindingObserver {
-  Brightness? _lastBrightness;
-  double? _lastTextScale;
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // En segundo plano el watchdog de ANR no debe despertar al proceso.
-    AnrWatchdog.setActive(active: state == AppLifecycleState.resumed);
-    ThorCore.instance?.recorder.record(ThorEventKind.environment, {
-      'signal': 'lifecycle',
-      'state': state.name,
-    });
-  }
-
-  /// El sistema avisa que anda corto de memoria — contexto oro cuando el
-  /// bug es "la app se cerró sola" (OOM kill inminente).
-  @override
-  void didHaveMemoryPressure() {
-    ThorCore.instance?.recorder.record(ThorEventKind.environment, {
-      'signal': 'memoryPressure',
-    });
-  }
-
-  /// Cambio de tema del sistema a media sesión — media clase de bugs de UI
-  /// son "solo en oscuro".
-  @override
-  void didChangePlatformBrightness() {
-    final value = PlatformDispatcher.instance.platformBrightness.name;
-    if (value == _lastBrightness?.name) return;
-    _lastBrightness = PlatformDispatcher.instance.platformBrightness;
-    ThorCore.instance?.recorder.record(ThorEventKind.environment, {
-      'signal': 'brightness',
-      'value': value,
-    });
-  }
-
-  /// Cambio de escala de texto — el clásico "se desborda con letra grande".
-  @override
-  void didChangeMetrics() {
-    final views = PlatformDispatcher.instance.views;
-    if (views.isEmpty) return;
-    final scale = views.first.platformDispatcher.textScaleFactor;
-    if (scale == _lastTextScale) return;
-    _lastTextScale = scale;
-    ThorCore.instance?.recorder.record(ThorEventKind.environment, {
-      'signal': 'textScale',
-      'value': scale.toStringAsFixed(2),
-    });
-  }
 }

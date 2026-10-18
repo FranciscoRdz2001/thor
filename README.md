@@ -59,6 +59,14 @@ patrones que un humano tardaría en ver:
   El narrador omite los de debug; el replay lleva solo warn/error
   (todos los niveles en modo diagnóstico, que enciende el dashboard).
   `Thor.run(captureLogs: false)` lo apaga.
+- **Logs estructurados**: `Thor.log('cobro', level: ThorLogLevel.warn,
+  data: {'orderId': 42})` suma campos JSON libres al mensaje (replay
+  `ev` `k: "log"`, `p: {m, lv, src, data?}`), sin secretos y con tope de
+  ~2 KB; `Thor.log` sigue mandando también a `dart:developer`.
+- **Eventos de negocio**: `Thor.track('add_to_cart', {'sku': 'A1'})` deja
+  el evento en la línea de tiempo, el journal, el reporte y el replay
+  (`k: "track"`, `p: {n, props?}`). `props` se guarda legible salvo
+  secretos y se descarta si pesa más de ~2 KB. Con Thor apagado es no-op.
 - **Rendimiento** (eventos `performance`, `p.kind`; en replay, narrador y
   reporte):
   - `startup {ms, until: first_frame|first_screen}`: de `Thor.run` al
@@ -84,6 +92,33 @@ patrones que un humano tardaría en ver:
   para `screen_load`, ≈2 ns/frame para evaluar un lote sano, y el
   watchdog cuesta <1-3 % de throughput en la UI isolate, dentro del ruido
   de medición).
+- **Contexto del dispositivo** (eventos `environment`, `p.signal`; en
+  journal, reporte, narrador y replay, sin plugins y sin trabajo por frame:
+  son avisos que Flutter ya manda, y cada valor solo se graba si cambió):
+  - `lifecycle {state}`: `resumed | inactive | paused | hidden | detached`.
+  - `memory_pressure`: el sistema avisa que anda corto de memoria (espaciado
+    a uno cada 5 s). Contexto oro cuando "la app se cerró sola".
+  - `locale {value}` (`es_MX`), `text_scale {value}` (`1.3`) y
+    `brightness {value}` (`light | dark`): cambios a media sesión. Los
+    valores iniciales ya van en la cabecera de la sesión (`deviceInfo`).
+  - `connectivity {online}`: **inferida**, sin `connectivity_plus`. Se
+    declara offline con fallos de DNS/ruta (`SocketException` con `Failed
+    host lookup`, `Network is unreachable`…) de 2 hosts distintos o 3 del
+    mismo en 15 s, y vuelve a online con la primera respuesta HTTP (el
+    estado inicial se asume online, sin evento). `Connection refused` y los
+    timeouts NO cuentan: un servidor caído no es un teléfono sin red.
+    Límite: solo ve la red que usa la app; sin tráfico no hay señal. Si
+    necesitas el estado exacto del radio, adaptador opcional (la app
+    depende de `connectivity_plus`, Thor no):
+
+    ```dart
+    Connectivity().onConnectivityChanged.listen((r) {
+      ThorCore.instance?.recorder.record(ThorEventKind.environment, {
+        'signal': 'connectivity',
+        'online': !r.contains(ConnectivityResult.none),
+      });
+    });
+    ```
 - **Red completa para depurar servicios**: TODAS las peticiones (no solo
   las fallidas) con método, URL completa con query, status, duración,
   headers y cuerpos de petición y respuesta (JSON decodificado o texto;
