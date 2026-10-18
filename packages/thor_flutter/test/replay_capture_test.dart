@@ -223,7 +223,7 @@ void main() {
       'email': 'ana@mail.com',
       'pin': RedactionPolicy.redactedMarker,
     });
-    expect(users.last.keys, unorderedEquals(['t', 'ts', 'id']));
+    expect(users.last.keys, unorderedEquals(['t', 'ts', 'id', 'q']));
     // Y no se duplica como evento genérico.
     expect(
       maps.where((r) => r['t'] == 'ev' && r['k'] == 'environment'),

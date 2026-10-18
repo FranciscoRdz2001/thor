@@ -1,3 +1,5 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:thor_flutter/thor_flutter.dart';
 
@@ -17,7 +19,20 @@ void main() {
     PerformanceCapture.attach();
   });
 
+  /// Deja que venza la espera de `first_screen` (tiempo real).
+  Future<void> settle() => Future<void>.delayed(
+        PerformanceCapture.firstScreenSettle + const Duration(milliseconds: 30),
+      );
+
+  setUp(
+    () => PerformanceCapture.firstScreenSettle =
+        const Duration(milliseconds: 20),
+  );
+
   tearDown(() {
+    PerformanceCapture.firstScreenSettle = const Duration(milliseconds: 50);
+    PerformanceCapture.quiet = const Duration(milliseconds: 300);
+    PerformanceCapture.maxLoad = const Duration(seconds: 10);
     PerformanceCapture.uninstall();
     ThorCore.debugReset();
   });
@@ -45,15 +60,31 @@ void main() {
       ]);
     });
 
-    test('first_screen: con la primera navegación, no con las siguientes', () {
+    test('first_screen: con la primera navegación, no con las siguientes',
+        () async {
       fakeUs += 1200000;
       nav('HomePage');
       fakeUs += 500000;
       nav('CartPage', from: 'HomePage');
+      await settle();
       final startups = perf('startup');
       expect(startups, hasLength(1));
       expect(startups.single['until'], 'first_screen');
       expect(startups.single['ms'], 1200);
+      expect(startups.single['screen'], 'HomePage');
+    });
+
+    test('first_screen: una ruta reemplazada en ~50 ms no cuenta', () async {
+      // OnboardingScreen → SplashBrand a los 3 ms: el usuario nunca vio la
+      // primera.
+      fakeUs += 900000;
+      nav('OnboardingScreen');
+      fakeUs += 3000;
+      nav('SplashBrand', action: 'replace', from: 'OnboardingScreen');
+      await settle();
+      final startup = perf('startup').single;
+      expect(startup['screen'], 'SplashBrand');
+      expect(startup['ms'], 903);
     });
   });
 
@@ -100,6 +131,85 @@ void main() {
       nav('TabB', action: 'screen', from: 'TabA'); // se detecta al final
       PerformanceCapture.onIdle();
       expect(perf('screen_load').single['ms'], 250);
+    });
+
+    test('el toque del usuario antes de terminar la corta: interrupted', () {
+      nav('SearchScreen', from: 'HomePage');
+      fakeUs += 400000;
+      PerformanceCapture.onFrame();
+      fakeUs += 700000; // el usuario escribe su búsqueda...
+      PerformanceCapture.onUserInput();
+      fakeUs += 6000000; // ...y no cuenta lo que tarde después.
+      PerformanceCapture.onIdle();
+      expect(perf('screen_load'), [
+        {
+          'kind': 'screen_load',
+          'screen': 'SearchScreen',
+          'ms': 1100,
+          'from': 'HomePage',
+          'interrupted': true,
+        },
+      ]);
+    });
+
+    testWidgets('un dedo real y el teclado cortan la carga', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(home: Scaffold(body: TextField())),
+      );
+      PerformanceCapture.install();
+      nav('SearchScreen', from: 'HomePage');
+      fakeUs += 250000;
+      await tester.tap(find.byType(TextField));
+      expect(perf('screen_load').single['interrupted'], isTrue);
+      expect(perf('screen_load').single['ms'], 250);
+
+      // Teclear (hardware) también.
+      nav('CartPage', from: 'SearchScreen');
+      fakeUs += 90000;
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+      expect(perf('screen_load'), hasLength(2));
+      expect(perf('screen_load').last['interrupted'], isTrue);
+    });
+
+    test('la entrada sin medición pendiente no hace nada', () {
+      PerformanceCapture.onUserInput();
+      expect(perf('screen_load'), isEmpty);
+    });
+
+    test('espera a que la red calle: una respuesta reciente retrasa el cierre',
+        () async {
+      PerformanceCapture.quiet = const Duration(milliseconds: 40);
+      nav('OrangeWalletPage', from: 'HomePage');
+      fakeUs += 100000;
+      PerformanceCapture.onFrame();
+      fakeUs += 900000;
+      // Llegó la respuesta de la petición de la pantalla...
+      ThorCore.instance!.recorder.record(ThorEventKind.network, {
+        'method': 'GET',
+        'url': 'https://api.example.com/wallet',
+        'statusCode': 200,
+        'durationMs': 900,
+      });
+      // ...y la UI quedó quieta justo después: aún no se da por cargada.
+      PerformanceCapture.onIdle();
+      expect(perf('screen_load'), isEmpty);
+      // Sin más red ni frames, la quietud de la red la cierra.
+      fakeUs += 500000;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      final load = perf('screen_load').single;
+      expect(load['screen'], 'OrangeWalletPage');
+      // Del cambio a la última respuesta (1 s), no a la espera.
+      expect(load['ms'], 1000);
+    });
+
+    test('sin quietud en maxLoad se cierra igual: capped', () async {
+      PerformanceCapture.maxLoad = const Duration(milliseconds: 30);
+      nav('LottiePage');
+      fakeUs += 12000000;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final load = perf('screen_load').single;
+      expect(load['capped'], isTrue);
+      expect(load['ms'], 12000);
     });
 
     test('sin navegación no hay screen_load', () {

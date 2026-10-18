@@ -42,6 +42,36 @@ patrones que un humano tardaría en ver:
   URL, status, duración y bytes (`lite: true`); las fallidas conservan
   headers, cuerpos y cURL. En memoria (inspector, cURL, reporte manual) todo
   sigue completo. `fullNetworkInJournal: true` lo desactiva.
+- **Instalación y dispositivo**: `meta.iid` es el id de INSTALACIÓN: Thor lo
+  guarda en `thor-install-id` dentro de `storageDirectory` y es el mismo en
+  cada lanzamiento (sin directorio, en memoria: cambia por lanzamiento; o
+  pasa el tuyo con `Thor.run(installId: …)`). `meta.device` trae
+  `{os, osVersion, locale, model?, simulator?}`: `model` y `simulator` solo
+  cuando se pudieron saber sin plugin (en el simulador de iOS salen de
+  `SIMULATOR_*`; en Android se omiten). Para el modelo exacto, tres líneas
+  con `device_info_plus` en la app (Thor no lo depende):
+
+  ```dart
+  final info = await DeviceInfoPlugin().deviceInfo;
+  Thor.run(body, deviceInfo: {
+    'model': info is IosDeviceInfo
+        ? info.utsname.machine // iPhone16,1
+        : (info as AndroidDeviceInfo).model,
+    'simulator': '${info is IosDeviceInfo ? !info.isPhysicalDevice
+        : !(info as AndroidDeviceInfo).isPhysicalDevice}',
+  });
+  ```
+- **Pantalla y contexto**: la navegación se anota AL INICIO del cambio
+  (push de ruta, toque en una tab: el árbol se mira ~50 ms después del
+  toque) y no al terminar de cargar, así las peticiones y errores que le
+  siguen ya llevan la pantalla nueva; "terminó de cargar" es el
+  `screen_load`. Un `pop` nombra la pantalla que de verdad queda visible
+  (la que el árbol había afinado, no la ruta raíz). Una clase que sirve a
+  muchos contextos (un PLP/búsqueda) se distingue con
+  `Thor.setScreenContext('Departamentos > Carnes > Res Selecta')` o, sin
+  hacer nada, con el título del AppBar visible (leído en el mismo
+  recorrido de quietud): va como `sd` en cada `ev` del replay y
+  `screen.detail` en el journal; lo puesto por la app gana sobre el título.
 - **Identidad**: `Thor.setUser(id, props: {...})` deja el usuario en la
   línea de tiempo, el reporte y el replay, y el dashboard busca sesiones
   por él. El id se guarda tal cual (con `RedactionPolicy.strict()` uno con
@@ -69,11 +99,18 @@ patrones que un humano tardaría en ver:
   secretos y se descarta si pesa más de ~2 KB. Con Thor apagado es no-op.
 - **Rendimiento** (eventos `performance`, `p.kind`; en replay, narrador y
   reporte):
-  - `startup {ms, until: first_frame|first_screen}`: de `Thor.run` al
-    primer frame rasterizado / a la primera pantalla.
-  - `screen_load {screen, ms, from?}`: del cambio de pantalla al último
-    frame antes de que la UI se quede quieta (reusa la detección de
-    quietud de `ScreenCapture`; por frame solo se lee un reloj, ~45 ns).
+  - `startup {ms, until: first_frame|first_screen, screen?}`: de
+    `Thor.run` al primer frame rasterizado / a la primera pantalla. Una
+    primera ruta reemplazada en ~50 ms (`OnboardingScreen` →
+    `SplashBrand`) no cuenta: se mide contra la que se queda.
+  - `screen_load {screen, ms, from?, interrupted?, capped?}`: del cambio de
+    pantalla a la PRIMERA quietud de su propia carga: UI quieta (reusa la
+    detección de `ScreenCapture`; por frame solo se lee un reloj, ~45 ns) y
+    red callada (sin peticiones en vuelo ni respuestas de los últimos
+    300 ms). No incluye el tiempo del usuario: si toca o teclea antes de que
+    termine, se corta ahí con `interrupted: true` (es una cota inferior, no
+    una carga completa: los agregados de lentitud deben excluirla), y
+    `capped: true` si pasaron 10 s sin quietud.
   - `jank {screen, slow, frozen, worstMs, frames}`: por lote de frames y
     con la pantalla vigente al entregarse el lote (≤ ~1 s después).
   - `anr {ms, screen}`: la UI isolate bloqueada ≥ `anrThreshold` (2 s por
@@ -141,9 +178,14 @@ patrones que un humano tardaría en ver:
     estuvo en segundo plano. Al irse a `paused`/`hidden` el journal se
     escribe a disco (así una app matada ahí no se confunde con un crash).
   - `memory_pressure`: el sistema avisa que anda corto de memoria (espaciado
-    a uno cada 5 s). Contexto oro cuando "la app se cerró sola".
+    a uno cada 5 s). Contexto oro cuando "la app se cerró sola". Los que
+    llegan en la ventana de ida/vuelta a segundo plano (2 s tras `inactive`
+    o `resumed`; iOS lo manda ahí casi siempre) llevan `transition: true`
+    y el narrador los omite.
   - `locale {value}` (`es_MX`), `text_scale {value}` (`1.3`) y
-    `brightness {value}` (`light | dark`): cambios a media sesión. Los
+    `brightness {value}` (`light | dark`): cambios a media sesión (el par
+    dark/light del selector de apps en esa misma ventana no se graba; un
+    cambio real ahí se anota al cerrarla). Los
     valores iniciales ya van en la cabecera de la sesión (`deviceInfo`).
   - `connectivity {online}`: **inferida**, sin `connectivity_plus`. Se
     declara offline con fallos de DNS/ruta (`SocketException` con `Failed
@@ -179,6 +221,16 @@ patrones que un humano tardaría en ver:
   OTP) no es un campo: envuélvelo en `ThorReplayIgnore`.
   `ThorReplayConfig(maskText: true)` enmascara el texto (largos de
   palabra) sin tocar el resto.
+- **Sin duplicados en la subida del replay**: cada registro (salvo `blk`,
+  que se direcciona por contenido) lleva una secuencia `q` monótona por
+  sesión —clave `"q"` en los mapas, ÚLTIMO elemento en los arreglos— para
+  que el servidor descarte exacto lo que ya vio por `(sid, q)`. Un solo
+  flush corre a la vez (antes dos subidas mandaban el mismo lote), la
+  recuperación de sesiones viejas no toca una sesión cuyo dueño sigue
+  subiendo (tras renovar la sesión re-subía el tramo en vuelo) y `.sent`
+  guarda la última `q` confirmada (`q:N`) con escritura serializada.
+  `meta` y `user` se escriben una vez por sesión (`user` solo si la
+  identidad cambió); una copia reenviada lleva el mismo `q`.
 - **Test de reproducción**: `ThorReproTestBuilder.build(timeline)` emite el
   esqueleto del `integration_test` con los pasos exactos. Los valores de los
   campos y la aserción van marcados `TODO` — Thor sabe qué pasó, no qué

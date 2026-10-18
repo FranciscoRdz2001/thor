@@ -154,6 +154,17 @@ class Thor {
   ///   `RedactionPolicy.strict()` (allowlist + sin datos con forma
   ///   personal en rutas, logs, errores y labels).
   /// - [appInfo] / [installId]: identidad para la cabecera de sesión.
+  ///   Sin [installId], Thor guarda uno propio en el directorio de
+  ///   [storageDirectory] (archivo `thor-install-id`): el mismo en cada
+  ///   lanzamiento, para unir las sesiones de una instalación. Sin
+  ///   directorio, uno en memoria (cambia por lanzamiento).
+  /// - [deviceInfo]: datos del dispositivo que se suman (y ganan sobre) los
+  ///   que Thor saca sin plugins (`os`, `osVersion`, `locale`,
+  ///   `simulator`). El modelo exacto (`model`) requiere un plugin; con
+  ///   `device_info_plus` son tres líneas en la app:
+  ///   `final info = await DeviceInfoPlugin().deviceInfo;` y
+  ///   `deviceInfo: {'model': info is IosDeviceInfo ? info.utsname.machine
+  ///   : (info as AndroidDeviceInfo).model}`. Va a `meta.device` del replay.
   /// - [appVersion] / [appBuild]: versión y número de build de la app
   ///   (`1.4.2` / `87`). Van a `appInfo['version']` / `appInfo['build']`,
   ///   o sea a `meta.app` del replay, al journal y a la línea "App:" del
@@ -199,6 +210,7 @@ class Thor {
     BufferQuotas? quotas,
     String? installId,
     Map<String, String> appInfo = const {},
+    Map<String, String> deviceInfo = const {},
     String? appVersion,
     String? appBuild,
     Set<String> infraPackages = const {},
@@ -251,7 +263,7 @@ class Thor {
             version: appVersion,
             build: appBuild,
           ),
-          deviceInfo: _collectDeviceInfo(),
+          deviceInfo: {..._collectDeviceInfo(), ...deviceInfo},
           capture: capture,
         );
         ThorNetworkCapture.install();
@@ -337,7 +349,28 @@ class Thor {
       if (size != null && !size.isEmpty)
         'screen': '${size.width.round()}x${size.height.round()}',
       'dartVersion': Platform.version.split(' ').first,
+      ..._simulatorInfo(),
     };
+  }
+
+  /// `simulator` (y el modelo simulado) sin plugin. iOS: el simulador
+  /// define `SIMULATOR_*` en el entorno del proceso. Android: no hay forma
+  /// barata de leer `ro.product.*` sin canal de plataforma — se omite.
+  static Map<String, String> _simulatorInfo() {
+    if (!Platform.isIOS) return const {};
+    try {
+      final env = Platform.environment;
+      final simulated = env.containsKey('SIMULATOR_UDID') ||
+          env.containsKey('SIMULATOR_DEVICE_NAME');
+      return {
+        'simulator': '$simulated',
+        if (env['SIMULATOR_MODEL_IDENTIFIER'] case final model?
+            when model.isNotEmpty)
+          'model': model,
+      };
+    } on Object {
+      return const {};
+    }
   }
 
   /// Ciclo de vida (fondo/regreso) a la línea de tiempo: muchísimos bugs
@@ -435,6 +468,23 @@ class Thor {
 
   /// Pantalla manual para navegación que el Navigator no ve.
   static void setScreen(String name) => ThorCore.instance?.setScreen(name);
+
+  /// Contexto fino de la pantalla actual, para una misma clase que sirve a
+  /// muchos contextos (un PLP/búsqueda genérico):
+  /// `Thor.setScreenContext('Departamentos > Carnes > Res Selecta')`.
+  ///
+  /// Acompaña a los eventos siguientes (`sd` en el replay, `detail` en la
+  /// pantalla del journal) hasta que cambie la pantalla; `null` lo quita.
+  /// Llámalo cuando el contexto ya se conoce (initState / al cargar), no en
+  /// el constructor del widget. Si no lo llamas, Thor usa el título del
+  /// AppBar visible, cuando hay uno. No-op con Thor apagado.
+  static void setScreenContext(String? detail) {
+    try {
+      ThorCore.instance?.setScreenContext(detail);
+    } on Object {
+      // Registrar jamás debe tumbar a la app.
+    }
+  }
 
   /// Fija (o limpia con `null`) el usuario de la sesión: queda en la línea
   /// de tiempo, en el reporte y en el replay (`{"t":"user"}`), y el

@@ -23,6 +23,7 @@ void main() {
   });
 
   tearDown(() {
+    EnvironmentCapture.now = DateTime.now;
     EnvironmentCapture.uninstall();
     ThorCore.debugReset();
     EnvironmentCapture.memoryPressureGap = const Duration(seconds: 5);
@@ -100,6 +101,78 @@ void main() {
       // Apagado = inofensivo.
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       expect(ThorCore.instance, isNull);
+    });
+  });
+
+  group('ruido de ida y vuelta a segundo plano', () {
+    var clock = DateTime(2026, 8, 1, 12);
+    setUp(() {
+      clock = DateTime(2026, 8, 1, 12);
+      EnvironmentCapture.now = () => clock;
+    });
+
+    List<Map<String, Object?>> signals(String name) =>
+        env().where((e) => e['signal'] == name).toList();
+
+    testWidgets('el par dark/light del selector de apps no se graba',
+        (tester) async {
+      final d = tester.platformDispatcher;
+      addTearDown(d.clearAllTestValues);
+      EnvironmentCapture.install();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      clock = clock.add(const Duration(milliseconds: 200));
+      d
+        ..platformBrightnessTestValue = Brightness.dark
+        ..platformBrightnessTestValue = Brightness.light;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      expect(signals('brightness'), isEmpty);
+      // Al cerrar la ventana el tema es el de siempre: nada que anotar.
+      clock = clock.add(const Duration(seconds: 3));
+      await tester.pump(const Duration(seconds: 3));
+      expect(signals('brightness'), isEmpty);
+    });
+
+    testWidgets('un cambio de tema real en la ventana se anota al cerrarla',
+        (tester) async {
+      final d = tester.platformDispatcher;
+      addTearDown(d.clearAllTestValues);
+      EnvironmentCapture.install();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      d.platformBrightnessTestValue = Brightness.dark;
+      expect(signals('brightness'), isEmpty);
+      clock = clock.add(const Duration(seconds: 3));
+      await tester.pump(const Duration(seconds: 3));
+      expect(signals('brightness'), [
+        {'signal': 'brightness', 'value': 'dark'},
+      ]);
+    });
+
+    testWidgets('memory_pressure tras inactive va marcado; uno real no',
+        (tester) async {
+      EnvironmentCapture.install();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      clock = clock.add(const Duration(milliseconds: 600));
+      tester.binding.handleMemoryPressure();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      expect(signals('memory_pressure'), [
+        {'signal': 'memory_pressure', 'transition': true},
+      ]);
+
+      // Mucho después, en primer plano: aviso real.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      clock = clock.add(const Duration(seconds: 30));
+      tester.binding.handleMemoryPressure();
+      expect(signals('memory_pressure').last, {'signal': 'memory_pressure'});
+    });
+
+    testWidgets('al volver (resumed) también hay ventana', (tester) async {
+      EnvironmentCapture.install();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      clock = clock.add(const Duration(minutes: 5));
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      clock = clock.add(const Duration(milliseconds: 300));
+      tester.binding.handleMemoryPressure();
+      expect(signals('memory_pressure').single['transition'], isTrue);
     });
   });
 

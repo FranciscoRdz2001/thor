@@ -165,7 +165,10 @@ class ThorReplayStats {
 /// mínimo para REDIBUJAR la interfaz y lo que el usuario hizo encima.
 ///
 /// Formato v2 — una línea por registro; los frecuentes son arreglos:
-/// - `{"t":"meta",…}` — sesión, tamaño de pantalla.
+/// - `{"t":"meta",…}` — sesión, tamaño de pantalla, `iid` (instalación,
+///   estable entre lanzamientos) y `device`: `{os, osVersion, locale,
+///   model?, simulator?}` (`model` y `simulator` solo si se pudieron
+///   saber; ver `Thor.run(deviceInfo:)`).
 /// - `["st", ts, hash, offs, vps, refs]` — estado de pantalla nuevo:
 ///   viewports `[id, padre, x, y, w, h, eje]` y referencias a bloques
 ///   `[hashBloque, vp, ox, oy]`.
@@ -183,7 +186,9 @@ class ThorReplayStats {
 ///   detiene mientras tanto: ese tiempo NO está en la duración del replay;
 ///   el marcador existe para que el dashboard lo excluya de la duración de
 ///   la sesión si la calcula con el reloj de pared.
-/// - `{"t":"ev",…}` — evento de Thor en versión ligera. En un tap, `p.l`
+/// - `{"t":"ev",…}` — evento de Thor en versión ligera. `sc` = pantalla,
+///   `sd` = su contexto fino si lo hay (`Thor.setScreenContext` o el
+///   título del AppBar visible). En un tap, `p.l`
 ///   es el label (string; enmascarado, la lista de largos de palabra como
 ///   el texto en pantalla); `p.k` la Key, solo si el label es legible.
 ///   Un log (`k: "log"`) es `p.l` (marca de `Thor.mark`) o
@@ -211,6 +216,14 @@ class ThorReplayStats {
 ///   `err`, `at`, `body`; en modo diagnóstico todas `body`, `qb`, `qh`,
 ///   `rh`, redactados con `RedactionPolicy.strict()`.
 ///
+/// Secuencia (`q`): TODO registro salvo `blk` lleva un número monótono por
+/// sesión (1, 2, 3…) para que el servidor deduplique exacto —`(sid, q)`
+/// ya visto se descarta— cuando una subida se reintenta o la recuperación
+/// repite un tramo. En los mapas es la clave `"q"`; en los arreglos es el
+/// ÚLTIMO elemento (`st` 7 elementos, `ref` 5, `sc` 5, `p` 6). `meta` y
+/// `user` se escriben una vez por sesión (`user` solo si la identidad
+/// cambió); una copia reenviada lleva el mismo `q`.
+///
 /// Subida en dos fases: se mandan los registros sin bloques; el servidor
 /// contesta `{"missing": [...]}` y solo esos bloques se mandan después.
 /// Una pantalla vista por mil usuarios se sube una vez.
@@ -224,6 +237,16 @@ class ThorReplay {
   );
 
   static ThorReplay? _instance;
+
+  /// Archivos de replay cuyo dueño sigue vivo (su `flush` final aún puede
+  /// estar subiendo): la recuperación NO los toca. Sin esto, tras una
+  /// renovación de sesión la recuperación re-subía —en paralelo con el
+  /// flush final del dueño— justo el tramo que este ya estaba mandando.
+  static final Set<String> _owned = {};
+
+  /// Hay una recuperación en curso: otra no arranca encima (dos pasadas
+  /// sobre los mismos archivos duplican lo que suben).
+  static bool _recovering = false;
 
   /// Instancia activa, si el replay está encendido.
   static ThorReplay? get instance => _instance;
@@ -268,11 +291,27 @@ class ThorReplay {
       ? RedactionPolicy.scrubText(text)
       : RedactionPolicy.scrubSecrets(text);
 
+  /// Texto de la interfaz (copy de pantalla): con texto enmascarado pierde
+  /// su forma de dato; si no, solo secretos.
+  String _scrubCopy(String text) =>
+      _maskText ? RedactionPolicy.scrubText(text) : _scrub(text);
+
   final Stopwatch _clock = Stopwatch();
   final List<String> _pendingDisk = [];
 
-  /// Registros aún no confirmados por el servidor (sin bloques).
-  final List<String> _pendingUpload = [];
+  /// Registros aún no confirmados por el servidor (sin bloques), con su
+  /// secuencia `q` (0 = un bloque devuelto a la cola).
+  final List<({int q, String line})> _pendingUpload = [];
+
+  /// Última secuencia asignada (ver `q` en [ThorReplay]).
+  int _seq = 0;
+
+  /// Mayor `q` que el servidor ya confirmó (lo que guarda `.sent`).
+  int _ackedSeq = 0;
+
+  /// Identidad ya escrita en el replay (`[uid, uprops]`): un `setUser` con
+  /// lo mismo no repite el registro `user`.
+  String? _lastUserSig;
 
   /// Todos los bloques de la sesión (hash → línea), para contestar los
   /// `missing` del servidor sin releer el disco.
@@ -291,7 +330,6 @@ class ThorReplay {
   bool _pointerDown = false;
   void Function()? _unsubscribe;
   HttpClient? _http;
-  bool _uploading = false;
 
   /// Bytes gzip enviados al servidor en esta sesión.
   int uploadedBytes = 0;
@@ -387,6 +425,7 @@ class ThorReplay {
     for (final url in [config.endpoint, config.configEndpoint]) {
       if (url != null) ThorNetworkCapture.ignoredPrefixes.add(url.toString());
     }
+    if (file != null) _owned.add(file.path);
     final sampled = Random().nextDouble() < config.sampleRate;
     final replay =
         _instance = ThorReplay._(config, core, file, sampled, directory)
@@ -417,6 +456,8 @@ class ThorReplay {
     String? apiKey,
     File current,
   ) async {
+    if (_recovering) return;
+    _recovering = true;
     try {
       final http = HttpClient();
       await for (final entity in dir.list()) {
@@ -424,7 +465,8 @@ class ThorReplay {
         if (entity is! File ||
             !path.endsWith('.jsonl') ||
             !path.split('/').last.startsWith('replay-') ||
-            path == current.path) {
+            path == current.path ||
+            _owned.contains(path)) {
           continue;
         }
         final base = path.substring(0, path.length - '.jsonl'.length);
@@ -432,9 +474,12 @@ class ThorReplay {
         final sent = File('$base.sent');
         if (on.existsSync()) {
           final sessionId = base.split('/').last.substring('replay-'.length);
-          final skip = sent.existsSync()
-              ? int.tryParse(sent.readAsStringSync()) ?? 0
-              : 0;
+          // `q:N` = el servidor ya confirmó hasta la secuencia N; un número
+          // suelto es el formato anterior (conteo de registros).
+          final mark = sent.existsSync() ? sent.readAsStringSync().trim() : '';
+          final acked =
+              mark.startsWith('q:') ? int.tryParse(mark.substring(2)) : null;
+          final skip = acked == null ? int.tryParse(mark) ?? 0 : 0;
           final blocks = <String, String>{};
           final records = <String>[];
           for (final line in await entity.readAsLines()) {
@@ -444,7 +489,12 @@ class ThorReplay {
               records.add(line);
             }
           }
-          final rest = records.skip(skip).toList();
+          final rest = acked == null
+              ? records.skip(skip).toList()
+              : [
+                  for (final line in records)
+                    if ((_seqOf(line) ?? acked + 1) > acked) line,
+                ];
           if (rest.isNotEmpty) {
             final up = await _upload(
               http,
@@ -466,7 +516,26 @@ class ThorReplay {
       http.close();
     } on Object {
       // La recuperación jamás debe afectar a la app.
+    } finally {
+      _recovering = false;
     }
+  }
+
+  /// La secuencia `q` de una línea del archivo: la clave `"q"` al final de
+  /// un mapa o el último elemento de un arreglo. `null` si no la trae
+  /// (archivo de una versión anterior).
+  static int? _seqOf(String line) {
+    if (line.endsWith('}')) {
+      final i = line.lastIndexOf(',"q":');
+      if (i < 0) return null;
+      return int.tryParse(line.substring(i + 5, line.length - 1));
+    }
+    if (line.endsWith(']')) {
+      final i = line.lastIndexOf(',');
+      if (i < 0) return null;
+      return int.tryParse(line.substring(i + 1, line.length - 1));
+    }
+    return null;
   }
 
   /// Sube [records] y luego los bloques que el servidor pida. Devuelve los
@@ -552,7 +621,6 @@ class ThorReplay {
     unawaited(File('$base.on').writeAsString('1').catchError((_) => File('')));
   }
 
-  int _sentRecords = 0;
   int? _retryAt;
 
   /// Quita la marca `.on`: una sesión rechazada no se reintenta al
@@ -565,15 +633,19 @@ class ThorReplay {
     if (on.existsSync()) unawaited(on.delete().catchError((_) => on));
   }
 
-  void _saveSent() {
+  /// Guarda hasta qué secuencia confirmó el servidor (`q:N`). Se espera
+  /// (las subidas van de una en una): antes eran escrituras sueltas que
+  /// podían terminar en desorden y dejar un valor viejo —y la recuperación
+  /// re-subía un tramo entero.
+  Future<void> _saveSent() async {
     final file = _file;
     if (file == null) return;
     final base = file.path.substring(0, file.path.length - '.jsonl'.length);
-    unawaited(
-      File('$base.sent').writeAsString('$_sentRecords').catchError(
-            (_) => File(''),
-          ),
-    );
+    try {
+      await File('$base.sent').writeAsString('q:$_ackedSeq', flush: true);
+    } on Object {
+      // Sin la marca solo se pierde precisión: el servidor deduplica por q.
+    }
   }
 
   /// Tiempo del replay en ms: el reloj de la sesión SIN el tiempo en
@@ -620,12 +692,14 @@ class ThorReplay {
       'h': size.height,
       'dpr': view.devicePixelRatio,
       'app': _core.session.appInfo,
+      if (_device() case final device?) 'device': device,
       // Con qué política se grabó: el dash lo muestra y avisa cuándo
       // espera ver datos personales (secretsOnly) y cuándo no (strict).
       'redaction': _strict ? 'strict' : 'secretsOnly',
       if (_core.userId != null) 'uid': _core.userId,
       if (_core.userProps != null) 'uprops': _core.userProps,
     });
+    _lastUserSig = jsonEncode([_core.userId, _core.userProps]);
     SchedulerBinding.instance.addPersistentFrameCallback(_onFrame);
     GestureBinding.instance.pointerRouter.addGlobalRoute(_onPointer);
     _unsubscribe = _core.recorder.addListener(_onEvent);
@@ -635,6 +709,18 @@ class ThorReplay {
     });
     WidgetsBinding.instance.addObserver(_lifecycle);
     _scheduleSnapshot();
+  }
+
+  /// `meta.device`: lo que el adaptador supo del dispositivo sin plugins
+  /// (`Thor.run(deviceInfo:)` suma el modelo exacto).
+  Map<String, Object?>? _device() {
+    final info = _core.session.deviceInfo;
+    final device = <String, Object?>{
+      for (final key in const ['os', 'osVersion', 'locale', 'model'])
+        if (info[key] case final value? when value.isNotEmpty) key: value,
+      if (info['simulator'] case final value?) 'simulator': value == 'true',
+    };
+    return device.isEmpty ? null : device;
   }
 
   // ── Disparadores ──
@@ -845,6 +931,10 @@ class ThorReplay {
     // "sesiones del usuario X" sin parsear eventos, con los props que la
     // app mandó a propósito (ya sin secretos).
     if (event.kind == ThorEventKind.environment && p['signal'] == 'user') {
+      // Una vez por identidad: el mismo usuario reafirmado no se repite.
+      final sig = jsonEncode([p['id'], p['props']]);
+      if (sig == _lastUserSig) return;
+      _lastUserSig = sig;
       _writeJson({
         't': 'user',
         'ts': _ts,
@@ -890,6 +980,7 @@ class ThorReplay {
       'ts': _ts,
       'k': event.kind.name,
       if (event.screen != null) 'sc': _scrub(event.screen!.display),
+      if (event.screen?.detail case final detail?) 'sd': _scrubCopy(detail),
       'p': slim,
     });
     // Una sesión con fallo se sube entera aunque no estuviera en la
@@ -1115,6 +1206,7 @@ class ThorReplay {
       'kind': p['kind'],
       for (final k in const [
         'ms', 'until', 'slow', 'frozen', 'worstMs', 'frames', 'nodes', //
+        'interrupted', 'capped', //
       ])
         if (p[k] != null) k: p[k],
       for (final k in const ['screen', 'from', 'name'])
@@ -1128,8 +1220,15 @@ class ThorReplay {
   /// escalar. El `user` no llega aquí (tiene registro propio).
   Map<String, Object?> _slimEnvironment(Map<String, Object?> p) => {
         'signal': p['signal'],
-        for (final k in const ['state', 'value', 'online', 'widget'])
-          if (p[k] != null) k: p[k] is String ? _scrub(p[k]! as String) : p[k],
+        for (final k in const [
+          'state', 'value', 'online', 'widget', 'transition', //
+        ])
+          if (p[k] != null)
+            k: p[k] is String
+                ? (p['signal'] == 'screen_context' ? _scrubCopy : _scrub)(
+                    p[k]! as String,
+                  )
+                : p[k],
         // Texto de un diálogo/snackbar de la app: copy escrito por la app,
         // pero puede interpolar datos; con texto enmascarado pierde su forma.
         if (p['text'] is String)
@@ -1284,22 +1383,72 @@ class ThorReplay {
 
   // ── Escritura y subida ──
 
-  void _writeJson(Map<String, Object?> record) => _line(jsonEncode(record));
+  void _writeJson(Map<String, Object?> record) {
+    final q = ++_seq;
+    _line(jsonEncode({...record, 'q': q}), q);
+  }
 
-  void _write(List<Object?> record) => _line(jsonEncode(record));
+  void _write(List<Object?> record) {
+    final q = ++_seq;
+    _line(jsonEncode([...record, q]), q);
+  }
 
-  void _line(String line) {
+  void _line(String line, int q) {
     _pendingDisk.add(line);
-    if (_config.endpoint != null) _pendingUpload.add(line);
+    if (_config.endpoint != null) _pendingUpload.add((q: q, line: line));
   }
 
   late final _lifecycle = _ReplayLifecycle(this);
   int _lastUploadAt = 0;
 
+  Future<void>? _running;
+  bool _again = false;
+  bool _againUpload = false;
+
   /// Escribe lo pendiente a disco (registros y bloques nuevos) y, si la
   /// sesión sube y [upload], manda el lote. Un fallo de red lo deja para
   /// después.
-  Future<void> flush({bool upload = true}) async {
+  ///
+  /// De una en una: si ya hay un flush en curso, este no arranca otro en
+  /// paralelo (dos escrituras al mismo archivo salían en desorden y dos
+  /// subidas mandaban el mismo lote); pide una pasada más cuando termine
+  /// la actual —una subida pedida YA (error, dashboard, "Reportar
+  /// problema") no espera al siguiente ciclo— y devuelve el mismo futuro.
+  Future<void> flush({bool upload = true}) {
+    final running = _running;
+    if (running != null) {
+      _again = true;
+      _againUpload = _againUpload || upload;
+      return running;
+    }
+    // En la zona raíz a propósito: el flush es IO de Thor, no de la app.
+    // Fuera de la zona de `Thor.run` sus errores no pasan por los
+    // capturadores (un fallo de red del propio replay no se vuelve error de
+    // la app), y quien lo dispara desde una zona de prueba con reloj falso
+    // no deja la cola de flush colgada de microtareas que nadie bombea.
+    final started = Zone.root.run(() => _flushLoop(upload));
+    _running = started;
+    return started;
+  }
+
+  Future<void> _flushLoop(bool upload) async {
+    try {
+      var up = upload;
+      while (true) {
+        _again = false;
+        _againUpload = false;
+        await _flushOnce(upload: up);
+        if (!_again) return;
+        up = _againUpload;
+      }
+    } on Object {
+      // Disco o red: lo que no salió se reintenta en el siguiente ciclo.
+    } finally {
+      _running = null;
+    }
+  }
+
+  Future<void> _flushOnce({required bool upload}) async {
     // El costo viaja con cada subida / ida a segundo plano (solo si hubo
     // snapshots nuevos): una línea, ~120 bytes.
     if (upload && _snapN > _statsAtN) {
@@ -1324,59 +1473,45 @@ class ThorReplay {
       _pendingDisk.clear();
     }
     if (!upload || !_uploadEnabled || _pendingUpload.isEmpty) return;
-    if (_uploading) {
-      // Una subida pedida YA (error, dashboard, "Reportar problema") no
-      // espera al siguiente ciclo: sale en cuanto termine la que va.
-      _uploadAgain = true;
-      return;
-    }
     // 429: el servidor pidió esperar.
     if (_retryAt case final at? when _ts < at) return;
-    _uploading = true;
     _lastUploadAt = _ts;
-    try {
-      final endpoint = _config.endpoint!;
-      final records = List<String>.of(_pendingUpload);
-      final up = await _upload(
-        _http ??= HttpClient(),
-        endpoint,
-        _config.apiKey,
-        _core.session.sessionId,
-        records,
-        _blocks,
-      );
-      switch (up.sent) {
-        case _Ok(:final bytes):
-          uploadedBytes += bytes;
-          _pendingUpload
-            ..removeRange(0, records.length)
-            ..insertAll(0, up.unsentBlocks);
-          _sentRecords += records.length;
-          _saveSent();
-        case _Later(:final after):
-          if (after != null) _retryAt = _ts + after.inMilliseconds;
-        case _Rejected(:final status):
-          if (status == 413) {
-            // Solo este lote: el resto de la sesión puede caber.
-            _pendingUpload.removeRange(0, records.length);
-          } else {
-            // Llave o sesión rechazadas: esta sesión ya no sube.
-            _uploadEnabled = false;
-            _rejected = true;
-            _pendingUpload.clear();
-            _unmarkEnabled();
-          }
-      }
-    } finally {
-      _uploading = false;
-    }
-    if (_uploadAgain) {
-      _uploadAgain = false;
-      await flush();
+    final endpoint = _config.endpoint!;
+    final batch = List.of(_pendingUpload);
+    final up = await _upload(
+      _http ??= HttpClient(),
+      endpoint,
+      _config.apiKey,
+      _core.session.sessionId,
+      [for (final r in batch) r.line],
+      _blocks,
+    );
+    switch (up.sent) {
+      case _Ok(:final bytes):
+        uploadedBytes += bytes;
+        _pendingUpload
+          ..removeRange(0, batch.length)
+          ..insertAll(0, [for (final b in up.unsentBlocks) (q: 0, line: b)]);
+        final acked = batch.fold<int>(_ackedSeq, (m, r) => max(m, r.q));
+        if (acked > _ackedSeq) {
+          _ackedSeq = acked;
+          await _saveSent();
+        }
+      case _Later(:final after):
+        if (after != null) _retryAt = _ts + after.inMilliseconds;
+      case _Rejected(:final status):
+        if (status == 413) {
+          // Solo este lote: el resto de la sesión puede caber.
+          _pendingUpload.removeRange(0, batch.length);
+        } else {
+          // Llave o sesión rechazadas: esta sesión ya no sube.
+          _uploadEnabled = false;
+          _rejected = true;
+          _pendingUpload.clear();
+          _unmarkEnabled();
+        }
     }
   }
-
-  bool _uploadAgain = false;
 
   final Set<String> _savedBlocks = {};
   Iterable<String> get _unsavedBlocks =>
@@ -1394,7 +1529,13 @@ class ThorReplay {
     r._unsubscribe?.call();
     WidgetsBinding.instance.removeObserver(r._lifecycle);
     GestureBinding.instance.pointerRouter.removeGlobalRoute(r._onPointer);
-    await r.flush();
+    try {
+      await r.flush();
+    } finally {
+      // Recién ahora (la última subida terminó, bien o mal) la
+      // recuperación puede ocuparse de lo que quede en el archivo.
+      if (r._file case final file?) _owned.remove(file.path);
+    }
   }
 
   /// Renovación de sesión: apaga el replay vigente (con su última subida,

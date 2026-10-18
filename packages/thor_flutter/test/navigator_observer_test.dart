@@ -81,6 +81,33 @@ void main() {
     );
   });
 
+  testWidgets('pop devuelve la pantalla que el árbol había afinado, no la raíz',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorObservers: [ThorNavigatorObserver()],
+        home: const HomePage(),
+      ),
+    );
+    // El home es la ruta raíz, pero lo que se ve es un PLP interno (tab):
+    // lo que ScreenCapture/Thor.setScreen dejan como pantalla activa.
+    Thor.setScreen('PlpBody');
+    await tester.tap(find.text('ir'));
+    await tester.pumpAndSettle();
+    expect(
+      ThorCore.instance!.recorder.currentScreen?.widgetClass,
+      'CheckoutPage',
+    );
+    Navigator.of(tester.element(find.text('pagar'))).pop();
+    await tester.pumpAndSettle();
+
+    final pop = navEvents().last;
+    expect(pop.payload['action'], 'pop');
+    expect(pop.payload['to'], 'PlpBody');
+    expect(pop.payload['from'], 'CheckoutPage');
+    expect(ThorCore.instance!.recorder.currentScreen?.display, 'PlpBody');
+  });
+
   testWidgets('rutas con nombre conservan routeName Y clase', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

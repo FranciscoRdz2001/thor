@@ -124,7 +124,16 @@ class ThorNarrator {
               if (state == 'paused') nested(event, '· App al fondo');
               if (state == 'resumed') nested(event, '· App de regreso');
             case 'memory_pressure' || 'memoryPressure':
-              nested(event, '⚠ Presión de memoria del sistema');
+              // Al irse a segundo plano iOS lo avisa siempre: no es presión
+              // real (ver EnvironmentCapture).
+              if (event.payload['transition'] != true) {
+                nested(event, '⚠ Presión de memoria del sistema');
+              }
+            case 'screen_context':
+              final value = event.payload['value'];
+              if (value != null) {
+                nested(event, '· Contexto de pantalla: $value');
+              }
             case 'brightness':
               nested(event, '· Tema del sistema: ${event.payload['value']}');
             case 'user':
@@ -182,7 +191,13 @@ class ThorNarrator {
             case 'startup':
               nested(event, '· Arranque: ${p['ms']}ms hasta ${p['until']}');
             case 'screen_load':
-              nested(event, '· Carga de ${p['screen']}: ${p['ms']}ms');
+              nested(
+                event,
+                p['interrupted'] == true
+                    ? '· Carga de ${p['screen']}: ${p['ms']}ms '
+                        '(interrumpida por el usuario)'
+                    : '· Carga de ${p['screen']}: ${p['ms']}ms',
+              );
             case 'anr':
               nested(
                 event,

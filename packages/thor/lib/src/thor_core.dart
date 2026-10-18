@@ -98,7 +98,7 @@ class ThorCore {
     final now = clock.now();
     final session = ThorSession(
       sessionId: generateThorId(),
-      installId: installId ?? generateThorId(),
+      installId: installId ?? await _persistentInstallId(storageDirectory),
       startedAtUtc: now.toUtc(),
       utcOffset: now.timeZoneOffset,
       appInfo: appInfo,
@@ -151,6 +151,32 @@ class ThorCore {
           capture: capture,
         );
     return _instance = core;
+  }
+
+  /// Nombre del archivo (dentro de `storageDirectory`) con el id de
+  /// instalación: sobrevive a los lanzamientos, así las sesiones de una
+  /// misma instalación se pueden unir.
+  static const installIdFile = 'thor-install-id';
+
+  /// Id de instalación estable: el que está en [installIdFile] o, si no hay
+  /// (primer arranque), uno nuevo que se guarda ahí. Sin directorio o con
+  /// el disco fallando, uno en memoria (cambia por lanzamiento: mejor eso
+  /// que impedir el arranque).
+  static Future<String> _persistentInstallId(Directory? dir) async {
+    if (dir == null) return generateThorId();
+    try {
+      final file = File('${dir.path}/$installIdFile');
+      if (file.existsSync()) {
+        final saved = (await file.readAsString()).trim();
+        if (RegExp(r'^[A-Za-z0-9_-]{8,64}$').hasMatch(saved)) return saved;
+      }
+      final id = generateThorId();
+      await dir.create(recursive: true);
+      await file.writeAsString(id, flush: true);
+      return id;
+    } on Object {
+      return generateThorId();
+    }
   }
 
   /// Termina esta sesión (cierre limpio: ráfagas, flush, marca de fin en el
@@ -355,6 +381,26 @@ class ThorCore {
     recorder.record(ThorEventKind.navigation, {
       'action': 'manual',
       'to': name,
+    });
+  }
+
+  /// Contexto fino de la pantalla actual (ver [ScreenId.detail]): para una
+  /// clase de pantalla que sirve a muchos contextos, `Departamentos >
+  /// Carnes > Res Selecta`. Va a la línea de tiempo (`environment`,
+  /// `signal: 'screen_context'`) y acompaña a los eventos siguientes; se
+  /// limpia solo al cambiar de pantalla. `null` lo quita. Se limpia de
+  /// secretos y se recorta.
+  void setScreenContext(String? detail) {
+    final current = recorder.currentScreen;
+    if (current == null) return;
+    final clean = detail == null || detail.trim().isEmpty
+        ? null
+        : cleanLogText(detail.trim(), 120, scrub: redaction.scrub);
+    if (clean == current.detail) return;
+    recorder.currentScreen = current.withDetail(clean);
+    recorder.record(ThorEventKind.environment, {
+      'signal': 'screen_context',
+      'value': clean,
     });
   }
 

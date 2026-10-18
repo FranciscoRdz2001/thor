@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:thor/thor.dart';
 
 /// Captura de rendimiento con lo barato. Todo va en eventos
@@ -7,11 +11,18 @@ import 'package:thor/thor.dart';
 ///
 /// - `jank` `{screen, slow, frozen, worstMs, frames}`: `addTimingsCallback`
 ///   entrega los tiempos de cada frame sin costo agregado.
-/// - `startup` `{ms, until: first_frame|first_screen}`: desde que arranca
-///   `Thor.run` hasta el primer frame rasterizado / la primera pantalla.
-/// - `screen_load` `{screen, ms, from?}`: de un cambio de pantalla a que
-///   la UI se queda quieta (la misma detección de quietud de
-///   `ScreenCapture`; ver `onFrame`).
+/// - `startup` `{ms, until: first_frame|first_screen, screen?}`: desde que
+///   arranca `Thor.run` hasta el primer frame rasterizado / la primera
+///   pantalla. La primera pantalla que se reemplaza en menos de
+///   [firstScreenSettle] (`Onboarding` → `Splash`) no cuenta: se mide
+///   contra la que se queda.
+/// - `screen_load` `{screen, ms, from?, interrupted?, capped?}`: de un
+///   cambio de pantalla a la PRIMERA quietud de la propia carga: UI quieta
+///   (la misma detección de `ScreenCapture`; ver `onFrame`) y red callada
+///   (sin peticiones en vuelo ni terminadas hace menos de [quiet]). No
+///   incluye el tiempo del usuario: si toca o teclea antes de que termine,
+///   la medición se corta ahí con `interrupted: true` (cota inferior, no
+///   una carga completa). `capped: true` = pasó [maxLoad] sin quietud.
 ///
 /// `anr` lo emite `AnrWatchdog` y `custom` sale de `Thor.measure`.
 ///
@@ -46,6 +57,8 @@ class PerformanceCapture {
         );
     SchedulerBinding.instance.addTimingsCallback(_callback!);
     attach();
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_onPointer);
+    HardwareKeyboard.instance.addHandler(_onKey);
   }
 
   /// Desinstala (tests).
@@ -58,6 +71,8 @@ class PerformanceCapture {
     _unsubscribe?.call();
     _unsubscribe = null;
     _attachedTo = null;
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(_onPointer);
+    HardwareKeyboard.instance.removeHandler(_onKey);
     _resetTiming();
   }
 
@@ -141,6 +156,34 @@ class PerformanceCapture {
   static int? _pendingStartUs;
   static String? _pendingScreen;
   static String? _pendingFrom;
+  static int _lastNetDoneUs = -1 << 40;
+  static int _tapUs = -1 << 40;
+  static Timer? _netTimer;
+  static Timer? _capTimer;
+
+  /// Quietud que cierra una carga: sin frames ni respuestas de red en este
+  /// tiempo.
+  @visibleForTesting
+  static Duration quiet = const Duration(milliseconds: 300);
+
+  /// Una carga que no encuentra quietud en este tiempo se cierra igual
+  /// (`capped: true`): una animación infinita o una petición colgada no
+  /// deben dejar la medición abierta para siempre.
+  @visibleForTesting
+  static Duration maxLoad = const Duration(seconds: 10);
+
+  /// Un toque reciente (en este margen) es el inicio real de un cambio de
+  /// pantalla detectado por el árbol, no la ráfaga de frames.
+  static const Duration _tapWindow = Duration(milliseconds: 1500);
+
+  /// Una primera pantalla reemplazada en este tiempo no es la que el
+  /// usuario ve (`Onboarding` → `Splash` a los 3 ms).
+  @visibleForTesting
+  static Duration firstScreenSettle = const Duration(milliseconds: 50);
+
+  static int _firstScreenAtUs = 0;
+  static String? _firstScreenName;
+  static Timer? _firstScreenTimer;
 
   static void Function()? _unsubscribe;
   static Object? _attachedTo;
@@ -157,21 +200,64 @@ class PerformanceCapture {
   }
 
   static void _onEvent(ThorEvent event) {
+    if (event.kind == ThorEventKind.network) {
+      _lastNetDoneUs = nowUs();
+      // Sin UI que cambie tras la respuesta no llega ninguna quietud de
+      // frames: la red callada la cierra sola.
+      if (_pendingStartUs != null) {
+        _netTimer?.cancel();
+        _netTimer = Timer(quiet, () => _tryClose(fromIdle: false));
+      }
+      return;
+    }
     if (event.kind != ThorEventKind.navigation) return;
     final p = event.payload;
-    if (!_firstScreenDone) {
-      _firstScreenDone = true;
-      _recordStartup('first_screen');
-    }
     final to = p['to'];
+    if (!_firstScreenDone) {
+      final at = nowUs();
+      if (_firstScreenTimer != null &&
+          at - _firstScreenAtUs > firstScreenSettle.inMicroseconds) {
+        // La candidata ya aguantó su tiempo (el timer aún no corre): es la
+        // primera pantalla; esta navegación es otra.
+        _firstScreenTimer!.cancel();
+        _emitFirstScreen();
+      } else {
+        // Se espera [firstScreenSettle]: si otra pantalla la reemplaza
+        // antes, la que cuenta es esa.
+        _firstScreenAtUs = at;
+        if (to is String) _firstScreenName = to;
+        _firstScreenTimer?.cancel();
+        _firstScreenTimer = Timer(firstScreenSettle, _emitFirstScreen);
+      }
+    }
     if (to is! String) return;
     // Dos navegaciones antes de la quietud (splash → home): la carga es de
     // la primera a la quietud, hacia la pantalla final.
     if (_pendingStartUs == null) {
-      _pendingStartUs = p['action'] == 'screen' ? _burstStartUs : nowUs();
+      _pendingStartUs = p['action'] == 'screen'
+          ? (nowUs() - _tapUs < _tapWindow.inMicroseconds
+              ? _tapUs
+              : _burstStartUs)
+          : nowUs();
       _pendingFrom = p['from'] as String?;
+      _capTimer?.cancel();
+      _capTimer = Timer(maxLoad, () => _close(capped: true));
     }
     _pendingScreen = to;
+  }
+
+  static void _emitFirstScreen() {
+    _firstScreenTimer = null;
+    if (_firstScreenDone) return;
+    _firstScreenDone = true;
+    final core = ThorCore.instance;
+    if (core == null) return;
+    core.recorder.record(ThorEventKind.performance, {
+      'kind': 'startup',
+      'ms': (_firstScreenAtUs - _runStartUs) ~/ 1000,
+      'until': 'first_screen',
+      if (_firstScreenName != null) 'screen': _firstScreenName,
+    });
   }
 
   /// Un frame se dibujó. Llamado por `ScreenCapture` desde su callback
@@ -184,27 +270,87 @@ class PerformanceCapture {
     }
   }
 
-  /// La UI se quedó quieta: cierra la medición pendiente, si la hay.
+  /// El usuario soltó el dedo (un toque terminado): si el cambio de
+  /// pantalla que provoca se detecta por el árbol, la carga empezó aquí.
+  static void onTap() => _tapUs = nowUs();
+
+  /// El usuario tocó o tecleó: lo que aún no terminó de cargar deja de ser
+  /// "la pantalla cargando" y pasa a ser tiempo suyo.
+  @visibleForTesting
+  static void onUserInput() => _interrupt();
+
+  static void _interrupt() {
+    if (_pendingStartUs != null) _close(interrupted: true);
+  }
+
+  static void _onPointer(PointerEvent e) {
+    if (e is PointerDownEvent) _interrupt();
+  }
+
+  static bool _onKey(KeyEvent e) {
+    if (e is KeyDownEvent) _interrupt();
+    return false; // solo observa.
+  }
+
+  /// La UI se quedó quieta: cierra la medición pendiente, si la hay (y si
+  /// la red también está callada).
   static void onIdle() {
     _inBurst = false;
+    _tryClose(fromIdle: true);
+  }
+
+  static void _tryClose({required bool fromIdle}) {
+    if (_pendingStartUs == null) return;
+    // Peticiones en vuelo: la pantalla aún está cargando. Cuando terminen,
+    // el evento de red vuelve a intentar.
+    if (ThorNetworkCapture.inFlight > 0) return;
+    final now = nowUs();
+    // Una respuesta reciente: su UI (rebuild) todavía puede venir.
+    if (now - _lastNetDoneUs < quiet.inMicroseconds) {
+      _netTimer?.cancel();
+      _netTimer = Timer(quiet, () => _tryClose(fromIdle: false));
+      return;
+    }
+    // Desde el timer de red hay que comprobar que la UI también esté
+    // quieta (desde `onIdle` lo está por definición).
+    if (!fromIdle && now - _lastFrameUs < quiet.inMicroseconds) return;
+    _close();
+  }
+
+  static void _close({bool interrupted = false, bool capped = false}) {
     final start = _pendingStartUs;
     final screen = _pendingScreen;
     if (start == null || screen == null) return;
     final from = _pendingFrom;
     _pendingStartUs = _pendingScreen = _pendingFrom = null;
+    _netTimer?.cancel();
+    _capTimer?.cancel();
     final core = ThorCore.instance;
     if (core == null) return;
-    // Sin frames desde el cambio (navegación sin pintar): 0, no negativo.
-    final end = _lastFrameUs > start ? _lastFrameUs : start;
+    final now = nowUs();
+    // El final es lo último que pasó DE LA CARGA: el último frame o la
+    // última respuesta (sin frames desde el cambio: 0, no negativo). Al
+    // interrumpir, el momento del toque; al topar, el tope.
+    var end = _lastFrameUs > start ? _lastFrameUs : start;
+    if (_lastNetDoneUs > end && _lastNetDoneUs <= now) end = _lastNetDoneUs;
+    if (interrupted || capped) end = now;
     core.recorder.record(ThorEventKind.performance, {
       'kind': 'screen_load',
       'screen': screen,
       'ms': (end - start) ~/ 1000,
       if (from != null) 'from': from,
+      if (interrupted) 'interrupted': true,
+      if (capped) 'capped': true,
     });
   }
 
   static void _resetTiming() {
+    _netTimer?.cancel();
+    _capTimer?.cancel();
+    _firstScreenTimer?.cancel();
+    _firstScreenName = null;
+    _lastNetDoneUs = -1 << 40;
+    _tapUs = -1 << 40;
     _firstFrameDone = false;
     _firstScreenDone = false;
     _inBurst = false;

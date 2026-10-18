@@ -4,6 +4,7 @@ import 'package:thor/thor.dart';
 import 'package:thor_flutter/src/overlay/thor_ui.dart' show ThorOwnUi;
 import 'package:thor_flutter/src/replay/wireframe.dart'
     show ThorReplayIgnore, ThorReplayShowText;
+import 'package:thor_flutter/src/screen_capture.dart';
 import 'package:thor_flutter/src/visible_tree.dart';
 
 /// Captura de interacciones sin instrumentar la app.
@@ -83,10 +84,22 @@ class InteractionCapture {
     }
   }
 
+  /// Dónde cayó el dedo: un toque (no un scroll) termina cerca.
+  static Offset? _downAt;
+
   static void _onPointer(PointerEvent event) {
+    if (event is PointerDownEvent) {
+      _downAt = event.position;
+      return;
+    }
     if (event is! PointerUpEvent) return;
     final core = ThorCore.instance;
     if (core == null) return;
+    // Un toque puede cambiar de pantalla (tab): se anota al INICIO, no al
+    // terminar de cargar. Un scroll no.
+    if (_downAt case final down? when (event.position - down).distance < 18) {
+      ScreenCapture.onTap();
+    }
 
     try {
       final hit = _describeHit(event.position);

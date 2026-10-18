@@ -11,10 +11,16 @@ import 'package:thor_flutter/src/anr_watchdog.dart';
 /// - `lifecycle {state, backgroundMs?}`: resumed | inactive | paused |
 ///   hidden | detached. Al volver (`resumed`) trae `backgroundMs`: lo que
 ///   estuvo en segundo plano, para excluirlo de la duración de la sesión.
-/// - `memory_pressure`: el sistema avisa que anda corto de memoria.
+/// - `memory_pressure`: el sistema avisa que anda corto de memoria. Con
+///   `transition: true` si llegó en la ventana de ida a segundo plano
+///   (`inactive` → `paused`) o de regreso: iOS lo manda ahí casi siempre y no
+///   es presión real (un aviso real, en primer plano, no lleva la marca).
 /// - `locale {value}`: cambió el idioma del sistema (`es_MX`).
 /// - `text_scale {value}`: cambió la escala de texto (`1.3`).
-/// - `brightness {value}`: tema del sistema (`light` | `dark`).
+/// - `brightness {value}`: tema del sistema (`light` | `dark`). Dentro de la
+///   ventana de ida/vuelta a segundo plano NO se graba: iOS cambia el tema
+///   dos veces para tomar las capturas del selector de apps. Si el cambio
+///   fue real, se registra al terminar la ventana.
 /// - `connectivity {online}`: la infiere el núcleo de las peticiones
 ///   (ver `ConnectivityInference`); aquí no hay nada que instalar.
 ///
@@ -25,6 +31,16 @@ class EnvironmentCapture with WidgetsBindingObserver {
   EnvironmentCapture._();
 
   static EnvironmentCapture? _instance;
+
+  /// Tras pasar a `inactive` desde primer plano (y tras volver a
+  /// `resumed`), lo que dura la ventana en que las señales de tema y
+  /// memoria son ruido del cambio de estado, no del usuario ni del SO.
+  @visibleForTesting
+  static Duration transitionWindow = const Duration(seconds: 2);
+
+  /// Reloj (sustituible en tests).
+  @visibleForTesting
+  static DateTime Function() now = DateTime.now;
 
   /// Mínimo entre avisos de memoria: el SO puede mandar varios seguidos.
   @visibleForTesting
@@ -43,6 +59,7 @@ class EnvironmentCapture with WidgetsBindingObserver {
   static void uninstall() {
     final capture = _instance;
     if (capture == null) return;
+    capture._reconcile?.cancel();
     WidgetsBinding.instance.removeObserver(capture);
     _instance = null;
   }
@@ -52,6 +69,14 @@ class EnvironmentCapture with WidgetsBindingObserver {
   String? _locale;
   DateTime? _lastMemory;
   DateTime? _backgroundAt;
+  AppLifecycleState? _lifecycle;
+  DateTime? _transitionUntil;
+  Timer? _reconcile;
+
+  bool get _inTransition {
+    final until = _transitionUntil;
+    return until != null && now().isBefore(until);
+  }
 
   /// Valores actuales como línea base: el primer aviso del sistema solo se
   /// graba si de verdad cambió algo.
@@ -74,6 +99,14 @@ class EnvironmentCapture with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // En segundo plano el watchdog de ANR no debe despertar al proceso.
     AnrWatchdog.setActive(active: state == AppLifecycleState.resumed);
+    // Ventana de ruido: al irse (inactive desde primer plano) y al volver.
+    if (state == AppLifecycleState.inactive &&
+        (_lifecycle == null || _lifecycle == AppLifecycleState.resumed)) {
+      _transitionUntil = now().add(transitionWindow);
+    } else if (state == AppLifecycleState.resumed) {
+      _transitionUntil = now().add(transitionWindow);
+    }
+    _lifecycle = state;
     final background = state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden;
     // Cuánto estuvo fuera: marca de hueco para que la duración de la
@@ -104,10 +137,16 @@ class EnvironmentCapture with WidgetsBindingObserver {
   /// "La app se cerró sola" suele ser un OOM kill precedido de esto.
   @override
   void didHaveMemoryPressure() {
-    final now = DateTime.now();
+    final at = now();
+    // En la ventana de ida/vuelta a segundo plano va marcado y no gasta el
+    // espaciado: un aviso real justo después no debe perderse.
+    if (_inTransition) {
+      _record({'signal': 'memory_pressure', 'transition': true});
+      return;
+    }
     final last = _lastMemory;
-    if (last != null && now.difference(last) < memoryPressureGap) return;
-    _lastMemory = now;
+    if (last != null && at.difference(last) < memoryPressureGap) return;
+    _lastMemory = at;
     _record({'signal': 'memory_pressure'});
   }
 
@@ -123,6 +162,33 @@ class EnvironmentCapture with WidgetsBindingObserver {
   /// Media clase de bugs de UI son "solo en oscuro".
   @override
   void didChangePlatformBrightness() {
+    // Las capturas del selector de apps: dark y light en pareja. La línea
+    // base no se toca; si de verdad cambió, [_reconcileBrightness] lo anota.
+    if (_inTransition) {
+      _scheduleReconcile();
+      return;
+    }
+    _syncBrightness();
+  }
+
+  /// Al cerrar la ventana se compara el tema actual con la línea base: si
+  /// el cambio era real se anota entonces; si era el par del selector de
+  /// apps, ya volvió al mismo valor y no hay nada que anotar.
+  void _scheduleReconcile() {
+    final until = _transitionUntil;
+    if (_reconcile != null || until == null) return;
+    final wait = until.difference(now()) + const Duration(milliseconds: 50);
+    _reconcile = Timer(wait, () {
+      _reconcile = null;
+      if (_inTransition) {
+        _scheduleReconcile();
+      } else {
+        _syncBrightness();
+      }
+    });
+  }
+
+  void _syncBrightness() {
     final value = WidgetsBinding.instance.platformDispatcher.platformBrightness;
     if (value == _brightness) return;
     _brightness = value;

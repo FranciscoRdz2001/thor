@@ -48,6 +48,22 @@ class ThorNetworkCapture {
     return ignoredPrefixes.any(s.startsWith);
   }
 
+  /// Peticiones enviadas (cuerpo cerrado) que aún no terminan. Sirve para
+  /// medir cuándo una pantalla terminó de cargar (red callada). Las que
+  /// llevan más de [inFlightMaxAge] sin terminar no cuentan: una respuesta
+  /// que la app nunca consume no debe bloquear la medición para siempre.
+  static int get inFlight {
+    if (_open.isEmpty) return 0;
+    final cutoff = clock.now().subtract(inFlightMaxAge);
+    _open.removeWhere((_, startedAt) => startedAt.isBefore(cutoff));
+    return _open.length;
+  }
+
+  /// Ver [inFlight].
+  static const Duration inFlightMaxAge = Duration(seconds: 30);
+
+  static final Map<Object, DateTime> _open = {};
+
   /// La URL tal como la graba Thor según [redaction]: en solo secretos,
   /// completa salvo el valor de los parámetros de secreto; en allowlist,
   /// query por allowlist y ruta sin datos personales. Expuesta para tests
@@ -297,6 +313,7 @@ class _SpyRequest implements HttpClientRequest {
 
   @override
   Future<HttpClientResponse> close() async {
+    ThorNetworkCapture._open[this] = clock.now();
     try {
       final response = await inner.close();
       return _spyResponse(response);
@@ -344,6 +361,7 @@ class _SpyRequest implements HttpClientRequest {
     int? responseTotal,
     Object? error,
   }) {
+    ThorNetworkCapture._open.remove(this);
     final core = ThorCore.instance;
     if (core == null) return;
     final redaction = core.redaction;

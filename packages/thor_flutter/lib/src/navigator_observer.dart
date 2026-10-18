@@ -40,6 +40,14 @@ class ThorNavigatorObserver extends NavigatorObserver {
 
   ThorCore? get _core => ThorCore.instance;
 
+  /// La pantalla que estaba activa MIENTRAS la ruta era la de arriba, al
+  /// momento de taparla con otra ruta. Al hacer pop hay que devolver
+  /// esa y no la que se deduce del builder de la ruta: una ruta raíz
+  /// (`HomeScreen`) puede mostrar tabs/sub-pantallas que solo ve el árbol
+  /// (`ScreenCapture`), y volver de un detalle a un PLP dentro del home
+  /// aparecía siempre como `HomeScreen`.
+  static final Expando<ScreenId> _screenUnder = Expando('thor screen under');
+
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
     _onActive(route, action: 'push', from: previousRoute);
@@ -87,13 +95,28 @@ class ThorNavigatorObserver extends NavigatorObserver {
     // regreso desde ella (`from` es la ruta de Thor que se cerró).
     if (ThorUi.isThorRoute(route) || ThorUi.isThorRoute(from)) return;
 
-    final screen = resolveScreen(route, tryBuilder: resolveWidgetClass);
+    // La pantalla en la que estaba el usuario: es el `from` de verdad (el de
+    // la ruta de abajo, sin builder, salía como `MaterialPageRoute<void>`).
+    final previous = core.recorder.currentScreen;
+    // Lo que se ve debajo de la ruta que se tapa (push), para devolverlo
+    // tal cual al regresar.
+    if (action == 'push' && from != null && !ThorUi.isThorRoute(from)) {
+      _screenUnder[from] = core.recorder.currentScreen;
+    }
+    // Pop/remove: la pantalla que queda visible es la de la ruta de abajo
+    // tal como estaba (incluido lo que el árbol afinó), no su builder.
+    final restored = action == 'pop' || action == 'remove'
+        ? _screenUnder[route]
+        : null;
+    final screen =
+        restored ?? resolveScreen(route, tryBuilder: resolveWidgetClass);
     core.recorder.currentScreen = screen;
     core.recorder.record(ThorEventKind.navigation, {
       'action': action,
       'to': screen.display,
       if (from != null)
-        'from': resolveScreen(from, tryBuilder: false).display,
+        'from': previous?.display ??
+            resolveScreen(from, tryBuilder: false).display,
       if (route.settings.arguments != null)
         // Solo la FORMA de los argumentos, nunca valores (PII).
         'argsType': route.settings.arguments.runtimeType.toString(),

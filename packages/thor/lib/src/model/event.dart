@@ -51,13 +51,19 @@ enum ThorEventKind {
 class ScreenId {
   /// Crea una identidad de pantalla. Al menos uno de los campos debería
   /// venir no-nulo; si todos son nulos, [display] cae a `'Desconocida'`.
-  const ScreenId({this.routeName, this.widgetClass, this.routeType});
+  const ScreenId({
+    this.routeName,
+    this.widgetClass,
+    this.routeType,
+    this.detail,
+  });
 
   /// Reconstruye desde el JSON producido por [toJson].
   factory ScreenId.fromJson(Map<String, Object?> json) => ScreenId(
         routeName: json['routeName'] as String?,
         widgetClass: json['widgetClass'] as String?,
         routeType: json['routeType'] as String?,
+        detail: json['detail'] as String?,
       );
 
   /// Nombre de ruta declarado por el router (`/checkout`), si existe.
@@ -69,6 +75,22 @@ class ScreenId {
   /// Tipo de la ruta (`MaterialPageRoute`, `DialogRoute`…), si se conoce.
   final String? routeType;
 
+  /// Contexto de esta pantalla cuando una misma clase sirve para muchas
+  /// (un PLP/búsqueda genérico): `Departamentos > Carnes > Res Selecta`.
+  /// Lo fija la app con `Thor.setScreenContext` o, si no, sale del título
+  /// del AppBar visible. NO entra en [display] (que agrupa por pantalla)
+  /// ni en la identidad de la pantalla para los cambios de navegación, pero
+  /// sí en `==`.
+  final String? detail;
+
+  /// Copia con otro [detail] (`null` lo limpia).
+  ScreenId withDetail(String? detail) => ScreenId(
+        routeName: routeName,
+        widgetClass: widgetClass,
+        routeType: routeType,
+        detail: detail,
+      );
+
   /// Nombre presentable: clase > ruta > tipo de ruta > `'Desconocida'`.
   /// El tipo de ruta como último recurso hace legibles los diálogos y
   /// sheets sin nombre (`DialogRoute<void>`).
@@ -79,6 +101,7 @@ class ScreenId {
         if (routeName != null) 'routeName': routeName,
         if (widgetClass != null) 'widgetClass': widgetClass,
         if (routeType != null) 'routeType': routeType,
+        if (detail != null) 'detail': detail,
       };
 
   @override
@@ -86,10 +109,11 @@ class ScreenId {
       other is ScreenId &&
       other.routeName == routeName &&
       other.widgetClass == widgetClass &&
-      other.routeType == routeType;
+      other.routeType == routeType &&
+      other.detail == detail;
 
   @override
-  int get hashCode => Object.hash(routeName, widgetClass, routeType);
+  int get hashCode => Object.hash(routeName, widgetClass, routeType, detail);
 
   @override
   String toString() => 'ScreenId($display)';
