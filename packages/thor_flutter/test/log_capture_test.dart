@@ -255,6 +255,37 @@ void main() {
       expect(tracks[1], {'n': 'sin_props'});
     });
 
+    testWidgets('performance (measure, anr, jank) viaja al replay',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: Text('x')));
+      await tester.runAsync(
+        () => ThorReplay.start(const ThorReplayConfig(), directory: dir),
+      );
+      Thor.setScreen('CobroPage');
+      Thor.measure('checkout', 840, data: {'items': 3, 'token': 'zzz'});
+      AnrWatchdog.recordAnr(2400);
+      PerformanceCapture.handleFrameTotals(
+        List.filled(4, const Duration(milliseconds: 60)),
+      );
+
+      final perf = await evRecords(tester, 'performance');
+      expect(perf[0], {
+        'kind': 'custom',
+        'name': 'checkout',
+        'ms': 840,
+        'data': {'items': 3, 'token': RedactionPolicy.redactedMarker},
+      });
+      expect(perf[1], {'kind': 'anr', 'ms': 2400, 'screen': 'CobroPage'});
+      expect(perf[2], {
+        'kind': 'jank',
+        'screen': 'CobroPage',
+        'slow': 4,
+        'frozen': 0,
+        'worstMs': 60,
+        'frames': 4,
+      });
+    });
+
     testWidgets('strict: solo warn/error; en diagnóstico todos; sin emails',
         (tester) async {
       await tester.pumpWidget(const MaterialApp(home: Text('x')));

@@ -36,9 +36,11 @@ void main() {
       const Duration(milliseconds: 12),
     ]);
     final event = perf().single;
-    expect(event.payload['slowFrames'], 3);
+    expect(event.payload['kind'], 'jank');
+    expect(event.payload['slow'], 3);
     expect(event.payload['worstMs'], 90);
-    expect(event.payload['frozenFrames'], 0);
+    expect(event.payload['frozen'], 0);
+    expect(event.payload['frames'], 4);
   });
 
   test('un solo frame CONGELADO se reporta aunque no haya ráfaga', () {
@@ -46,7 +48,7 @@ void main() {
       const Duration(milliseconds: 900),
     ]);
     final event = perf().single;
-    expect(event.payload['frozenFrames'], 1);
+    expect(event.payload['frozen'], 1);
     expect(event.payload['worstMs'], 900);
   });
 

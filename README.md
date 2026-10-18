@@ -59,6 +59,31 @@ patrones que un humano tardaría en ver:
   El narrador omite los de debug; el replay lleva solo warn/error
   (todos los niveles en modo diagnóstico, que enciende el dashboard).
   `Thor.run(captureLogs: false)` lo apaga.
+- **Rendimiento** (eventos `performance`, `p.kind`; en replay, narrador y
+  reporte):
+  - `startup {ms, until: first_frame|first_screen}`: de `Thor.run` al
+    primer frame rasterizado / a la primera pantalla.
+  - `screen_load {screen, ms, from?}`: del cambio de pantalla al último
+    frame antes de que la UI se quede quieta (reusa la detección de
+    quietud de `ScreenCapture`; por frame solo se lee un reloj, ~45 ns).
+  - `jank {screen, slow, frozen, worstMs, frames}`: por lote de frames y
+    con la pantalla vigente al entregarse el lote (≤ ~1 s después).
+  - `anr {ms, screen}`: la UI isolate bloqueada ≥ `anrThreshold` (2 s por
+    defecto, `Thor.run(anrThreshold: ...)`, `null` lo apaga). Un isolate
+    aparte hace ping cada ~umbral/4 (500 ms): sin trabajo por frame, un
+    solo ping en vuelo, solo con la app en `resumed` (en segundo plano su
+    timer se cancela: no despierta al proceso), no confunde una suspensión
+    del SO con un bloqueo, no mantiene viva la app y está apagado en tests
+    y con Thor apagado. Solo ve los ANR que terminan (si el SO mata la app
+    a media espera no hubo quién grabarlo).
+  - `custom {name, ms, data?}` con `Thor.measure(name, ms, data: {...})`.
+    Si la app ya tiene su medidor (una app de producción: `PerformanceTracker`), lo
+    reenvía con UNA línea donde cierra cada traza:
+    `Thor.measure(trace.name, trace.elapsed.inMilliseconds);`
+  Costo medido: `test/performance_overhead_test.dart` (≈45 ns por frame
+  para `screen_load`, ≈2 ns/frame para evaluar un lote sano, y el
+  watchdog cuesta <1-3 % de throughput en la UI isolate, dentro del ruido
+  de medición).
 - **Red completa para depurar servicios**: TODAS las peticiones (no solo
   las fallidas) con método, URL completa con query, status, duración,
   headers y cuerpos de petición y respuesta (JSON decodificado o texto;

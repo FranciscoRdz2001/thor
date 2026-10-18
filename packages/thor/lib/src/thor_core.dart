@@ -217,6 +217,22 @@ class ThorCore {
     });
   }
 
+  /// Graba un tiempo propio de la app (`ThorEventKind.performance`,
+  /// `kind: 'custom'`): `{name, ms, data?}`. Es la puerta para que el
+  /// medidor de la app (un `PerformanceTracker`, un trace de Firebase…)
+  /// reenvíe sus tiempos con una línea. [data] sigue las reglas de
+  /// [track] (sin secretos, ~2 KB). Un [ms] no finito o negativo se ignora.
+  void measure(String name, num ms, {Map<String, Object?>? data}) {
+    if (!ms.isFinite || ms < 0) return;
+    final clean = _boundData(data, maxTrackPropsChars);
+    recorder.record(ThorEventKind.performance, {
+      'kind': 'custom',
+      'name': cleanLogText(name, _maxTrackNameChars, scrub: redaction.scrub),
+      'ms': ms.round(),
+      if (clean != null) 'data': clean,
+    });
+  }
+
   /// [data] redactado con la política vigente, forzado a JSON puro y
   /// acotado a [maxChars] serializados; `null` si no hay datos.
   Map<String, Object?>? _boundData(Map<String, Object?>? data, int maxChars) {

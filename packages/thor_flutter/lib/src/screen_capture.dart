@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/performance_capture.dart';
 import 'package:thor_flutter/src/visible_tree.dart';
 
 /// Pantallas que el Navigator no ve: tabs (`IndexedStack`, `TabBarView`),
@@ -46,8 +47,15 @@ class ScreenCapture {
 
   static void _onFrame(Duration _) {
     if (!_installed) return;
+    // Una lectura de reloj: de ahí sale screen_load (ver PerformanceCapture).
+    PerformanceCapture.onFrame();
     _timer?.cancel();
-    _timer = Timer(idle, check);
+    _timer = Timer(idle, _onIdle);
+  }
+
+  static void _onIdle() {
+    check();
+    PerformanceCapture.onIdle();
   }
 
   /// Mira el árbol ahora y actualiza la pantalla si cambió.

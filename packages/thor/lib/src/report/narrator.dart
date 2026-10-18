@@ -155,9 +155,24 @@ class ThorNarrator {
           final data = event.payload['data'];
           if (data != null) detail('data: ${_short(jsonEncode(data))}');
         case ThorEventKind.performance:
-          final slow = event.payload['slowFrames'];
-          final worst = event.payload['worstMs'];
-          nested(event, '⚠ Jank: $slow frames lentos (peor ${worst}ms)');
+          final p = event.payload;
+          switch (p['kind']) {
+            case 'startup':
+              nested(event, '· Arranque: ${p['ms']}ms hasta ${p['until']}');
+            case 'screen_load':
+              nested(event, '· Carga de ${p['screen']}: ${p['ms']}ms');
+            case 'anr':
+              nested(
+                event,
+                '✗ ANR: la app no respondió ${p['ms']}ms en ${p['screen']}',
+              );
+            case 'custom':
+              nested(event, '· ${p['name']}: ${p['ms']}ms');
+            default:
+              final slow = p['slow'] ?? p['slowFrames'];
+              final worst = p['worstMs'];
+              nested(event, '⚠ Jank: $slow frames lentos (peor ${worst}ms)');
+          }
         case ThorEventKind.track:
           final props = event.payload['props'];
           final shown = props == null ? '' : ' ${_short(jsonEncode(props))}';

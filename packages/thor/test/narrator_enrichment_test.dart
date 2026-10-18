@@ -125,7 +125,7 @@ void main() {
             atUtc: DateTime.utc(2026),
             utcOffset: Duration.zero,
             screen: ScreenId(widgetClass: screen),
-            payload: {'slowFrames': slow, 'worstMs': worst},
+            payload: {'kind': 'jank', 'slow': slow, 'worstMs': worst},
           );
       final stats = ThorAggregates.slowFramesByScreen([
         perf(0, 'CatalogoPage', 5, 120),

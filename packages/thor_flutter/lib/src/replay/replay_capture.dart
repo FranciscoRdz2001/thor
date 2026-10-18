@@ -832,6 +832,7 @@ class ThorReplay {
       ThorEventKind.state => _slimState(p),
       ThorEventKind.log => _slimLog(p),
       ThorEventKind.track => _slimTrack(p),
+      ThorEventKind.performance => _slimPerformance(p),
       _ => null,
     };
     if (slim == null) return;
@@ -1055,6 +1056,23 @@ class ThorReplay {
         },
         if (p['props'] != null) 'props': _slimData(p['props']),
       };
+
+  /// Rendimiento (`startup`, `screen_load`, `jank`, `anr`, `custom`): solo
+  /// números y nombres de pantalla/medida (con la limpieza de siempre);
+  /// el `data` de un `custom` sigue la regla de [_slimData].
+  Map<String, Object?> _slimPerformance(Map<String, Object?> p) {
+    Object? clean(Object? v) => v is String ? _scrub(v) : v;
+    return {
+      'kind': p['kind'],
+      for (final k in const [
+        'ms', 'until', 'slow', 'frozen', 'worstMs', 'frames', //
+      ])
+        if (p[k] != null) k: p[k],
+      for (final k in const ['screen', 'from', 'name'])
+        if (p[k] != null) k: clean(p[k]),
+      if (p['data'] != null) 'data': _slimData(p['data']),
+    };
+  }
 
   /// Campos estructurados (`data` de un log, `props` de un track): tal
   /// cual (solo secretos tapados) o re-redactados en estricto.

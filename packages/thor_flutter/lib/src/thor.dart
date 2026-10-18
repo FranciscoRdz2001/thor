@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:stack_trace/stack_trace.dart';
 import 'package:thor/thor.dart';
+import 'package:thor_flutter/src/anr_watchdog.dart';
 import 'package:thor_flutter/src/error_capture.dart';
 import 'package:thor_flutter/src/interaction_capture.dart';
 import 'package:thor_flutter/src/log_capture.dart';
@@ -167,6 +168,9 @@ class Thor {
   ///   [ThorCapturePolicy.logBurstLimit]). La consola los sigue mostrando
   ///   igual. `dart:developer` `log()` no se puede interceptar: ver
   ///   [log].
+  /// - [anrThreshold]: la UI bloqueada este tiempo o más se graba como
+  ///   `performance {kind: 'anr'}` (un isolate aparte hace ping; solo con
+  ///   la app en primer plano; apagado en tests). `null` lo desactiva.
   static Future<void> run(
     FutureOr<void> Function() body, {
     bool enabled = kDebugMode,
@@ -181,11 +185,13 @@ class Thor {
     Set<String> infraPackages = const {},
     ThorCapturePolicy capture = const ThorCapturePolicy(),
     bool captureLogs = true,
+    Duration? anrThreshold = const Duration(seconds: 2),
   }) async {
     if (!enabled) {
       await body();
       return;
     }
+    PerformanceCapture.markRunStart();
     _enabled = true;
     // Paquetes propios de transporte (`mi_sdk`) que NO deben salir como
     // origen: sin esto el archivo:línea apunta al interior del cliente HTTP
@@ -207,6 +213,11 @@ class Thor {
         // El binding se inicializa AQUÍ, dentro de la zona, para que sea la
         // misma que la del runApp del body (ver [storageDirectory]).
         WidgetsFlutterBinding.ensureInitialized();
+        // Arranque hasta el primer frame: se engancha ANTES del body.
+        unawaited(
+          WidgetsBinding.instance.waitUntilFirstFrameRasterized
+              .then((_) => PerformanceCapture.onFirstFrame()),
+        );
         await ThorCore.init(
           // Se resuelve después del binding: path_provider lo necesita.
           // Si falla, Thor corre en memoria — un journal ausente nunca
@@ -243,6 +254,14 @@ class Thor {
         // Tabs y PageView: pantallas que el Navigator no ve.
         ScreenCapture.install();
         _watchLifecycle();
+        if (anrThreshold != null) {
+          unawaited(
+            AnrWatchdog.start(
+              threshold: anrThreshold,
+              active: _isForeground(),
+            ),
+          );
+        }
       }),
       // Re-lanzar rompería la zona; el error queda registrado y los
       // handlers de la app (Crashlytics vía PlatformDispatcher) corren por
@@ -298,6 +317,11 @@ class Thor {
 
   /// Ciclo de vida (fondo/regreso) a la línea de tiempo: muchísimos bugs
   /// viven en el resume (token vencido, socket muerto, cámara liberada).
+  static bool _isForeground() {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state == null || state == AppLifecycleState.resumed;
+  }
+
   static void _watchLifecycle() {
     WidgetsBinding.instance.addObserver(_LifecycleWatcher());
   }
@@ -368,6 +392,22 @@ class Thor {
     }
   }
 
+  /// Registra un tiempo propio de la app (`performance`, `kind: 'custom'`):
+  /// `Thor.measure('checkout', 840, data: {'items': 3})`.
+  ///
+  /// Para quien ya tiene su propio medidor, un reenvío de una línea. Ej.
+  /// con un `PerformanceTracker` que cierra trazas con nombre y duración:
+  /// en su `stop` agregar
+  /// `Thor.measure(trace.name, trace.elapsed.inMilliseconds)`.
+  /// [data]: JSON libre sin secretos, ~2 KB. No-op con Thor apagado.
+  static void measure(String name, num ms, {Map<String, Object?>? data}) {
+    try {
+      ThorCore.instance?.measure(name, ms, data: data);
+    } on Object {
+      // Medir jamás debe tumbar a la app.
+    }
+  }
+
   /// Pantalla manual para navegación que el Navigator no ve.
   static void setScreen(String name) => ThorCore.instance?.setScreen(name);
 
@@ -430,6 +470,8 @@ class _LifecycleWatcher with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // En segundo plano el watchdog de ANR no debe despertar al proceso.
+    AnrWatchdog.setActive(active: state == AppLifecycleState.resumed);
     ThorCore.instance?.recorder.record(ThorEventKind.environment, {
       'signal': 'lifecycle',
       'state': state.name,

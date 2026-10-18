@@ -9,6 +9,7 @@ library;
 
 export 'package:thor/thor.dart';
 
+export 'src/anr_watchdog.dart' show AnrWatchdog;
 export 'src/error_capture.dart' show ErrorCapture;
 export 'src/interaction_capture.dart' show InteractionCapture;
 export 'src/log_capture.dart' show LogCapture;

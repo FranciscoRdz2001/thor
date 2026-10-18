@@ -74,13 +74,17 @@ class ThorAggregates {
     final result = <String, Map<String, Object?>>{};
     for (final event in timeline) {
       if (event.kind != ThorEventKind.performance) continue;
+      // Solo jank: startup/screen_load/anr/custom no traen frames lentos.
+      final kind = event.payload['kind'];
+      if (kind != null && kind != 'jank') continue;
+      final slowFrames = (event.payload['slow'] ?? event.payload['slowFrames'])
+          as int?;
       final screen = event.screen?.display ?? '(sin pantalla)';
       final bucket = result.putIfAbsent(
         screen,
         () => {'slowFrames': 0, 'worstMs': 0},
       );
-      bucket['slowFrames'] = (bucket['slowFrames']! as int) +
-          (event.payload['slowFrames'] as int? ?? 0);
+      bucket['slowFrames'] = (bucket['slowFrames']! as int) + (slowFrames ?? 0);
       final worst = event.payload['worstMs'] as int? ?? 0;
       if (worst > (bucket['worstMs']! as int)) bucket['worstMs'] = worst;
     }
