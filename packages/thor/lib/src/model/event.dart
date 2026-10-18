@@ -93,8 +93,30 @@ class ScreenId {
 
   /// Nombre presentable: clase > ruta > tipo de ruta > `'Desconocida'`.
   /// El tipo de ruta como último recurso hace legibles los diálogos y
-  /// sheets sin nombre (`DialogRoute<void>`).
-  String get display => widgetClass ?? routeName ?? routeType ?? 'Desconocida';
+  /// sheets sin nombre: `Dialog (DialogRoute<void>)`, `BottomSheet
+  /// (ModalBottomSheetRoute<…>)` — un nombre con sentido para el humano que
+  /// sigue siendo grepeable (el dash los agrupa como "Dialog"/"BottomSheet").
+  String get display =>
+      widgetClass ?? routeName ?? _semanticRoute(routeType) ?? 'Desconocida';
+
+  static String? _semanticRoute(String? type) {
+    if (type == null) return null;
+    final base = type.split('<').first.replaceFirst(RegExp('^_+'), '');
+    final kind = switch (base) {
+      'DialogRoute' ||
+      'RawDialogRoute' ||
+      'CupertinoDialogRoute' ||
+      'DialogPageRoute' =>
+        'Dialog',
+      'ModalBottomSheetRoute' ||
+      'CupertinoModalPopupRoute' ||
+      'ModalSheetRoute' =>
+        'BottomSheet',
+      'PopupRoute' || 'PopupMenuRoute' || '_PopupMenuRoute' => 'Popup',
+      _ => null,
+    };
+    return kind == null ? type : '$kind ($type)';
+  }
 
   /// Serializa omitiendo campos nulos.
   Map<String, Object?> toJson() => {

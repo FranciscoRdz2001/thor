@@ -237,6 +237,10 @@ class RedactionPolicy {
   static bool isSecretKey(String key) {
     final k = _normalize(key);
     if (_notSecret.contains(k)) return false;
+    // Cabeceras CORS (`access-control-allow-credentials: true`,
+    // `access-control-allow-headers: authorization`): directivas del
+    // servidor, no credenciales; casaban por la palabra `credential`.
+    if (k.startsWith('access_control_')) return false;
     return _hardDenied.contains(k) ||
         _secretExact.contains(k) ||
         _secretFragment.hasMatch(k);
@@ -397,7 +401,14 @@ class RedactionPolicy {
   // empiezan como una marca (2–6: Visa, MC, Amex, Discover) y pasan Luhn.
   // El prefijo y Luhn dejan pasar teléfonos (10 dígitos), ids y epochs en
   // ms (empiezan con 1).
-  static final _card = RegExp(r'(?<![\d-])[2-6](?:[ -]?\d){12,18}(?![\d])');
+  //
+  // Nunca DENTRO de una palabra o un host: un hash hexadecimal con una
+  // corrida larga de dígitos que casualmente pasa Luhn
+  // (`1.1 55e94644…<13 dígitos>.cloudfront.net`) se partía en dos. El
+  // número no puede venir pegado a letras/guiones bajos ni seguido de
+  // `.letra` (un host); un número de tarjeta suelto sigue tapado.
+  static final _card =
+      RegExp(r'(?<![\w-])[2-6](?:[ -]?\d){12,18}(?!\w|\.[A-Za-z])');
 
   static bool _luhn(String candidate) {
     final digits = candidate.replaceAll(_nonDigit, '');

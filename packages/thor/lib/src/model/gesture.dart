@@ -25,6 +25,12 @@ abstract final class ThorGesture {
   /// etiqueta del campo; el texto escrito JAMÁS se captura.
   static const textFocus = 'text_focus';
 
+  /// Se terminó de editar un campo de texto (perdió el foco tras cambiar):
+  /// `length` final, `startLength`, `empty`, `edits` (cambios), y `source`
+  /// (`typed` / `pasted_or_scanned`) si el texto es largo. NUNCA el
+  /// contenido.
+  static const textEdit = 'text_edit';
+
   /// ¿Es un toque (corto o sostenido)? Lo que cuenta para "qué tocó",
   /// ráfagas de frustración y la receta de reproducción. `null` (eventos
   /// de versiones anteriores) y los semánticos equivalentes también.

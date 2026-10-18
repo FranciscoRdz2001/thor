@@ -9,6 +9,7 @@ export 'src/model/event.dart';
 export 'src/model/gesture.dart';
 export 'src/model/log_level.dart';
 export 'src/model/session.dart';
+export 'src/network/body_rules.dart';
 export 'src/network/network_capture.dart' show ThorNetworkCapture;
 export 'src/network/raw_network_store.dart';
 export 'src/persistence/journal.dart';

@@ -69,6 +69,24 @@ enum ThorLogLevel {
     caseSensitive: false,
   );
   static final _status4xx = RegExp(r'\b4\d\d\b');
+
+  /// `Recurso GET error 404`: la palabra "error" seguida de un código HTTP
+  /// (la forma en que muchos clientes loguean una respuesta). Un 4xx es el
+  /// negocio diciendo que no → warn; un 5xx sigue siendo error.
+  static final _errorWithStatus = RegExp(
+    r'\berror\b[^\n]{0,12}?\[?\b([1-5]\d\d)\b\]?',
+    caseSensitive: false,
+  );
+
+  /// Líneas de medición de rendimiento (`[PERF] search result=ok 312ms`):
+  /// informativas aunque el texto diga "error" en un campo. Solo un
+  /// `result=error`/`(error)` explícito sube a warn (el fallo que esa
+  /// medición vio, p. ej. una excepción cruda mostrada al usuario).
+  static final _perf = RegExp(r'^\s*\[PERF\]');
+  static final _perfFailed = RegExp(
+    r'\bresult\s*=\s*error\b|\(error\)',
+    caseSensitive: false,
+  );
   static final _statusCode = RegExp(
     r'\[(\d{3})\]|status(?:\s*code)?\s*[:=]?\s*(\d{3})\b',
     caseSensitive: false,
@@ -86,14 +104,24 @@ enum ThorLogLevel {
   static ThorLogLevel infer(String message, {ThorLogLevel fallback = debug}) {
     if (message.startsWith('onError(')) return error;
     if (_blocTrace.hasMatch(message)) return fallback;
+    if (_perf.hasMatch(message)) {
+      return _perfFailed.hasMatch(message) ? warn : info;
+    }
     if (_httpClientError.hasMatch(message)) {
       // El código HTTP de verdad (`[400]`, `statusCode: 500`) manda; un
       // «412 ms» suelto del texto no vuelve 4xx a un 500.
       final code = _statusOf(message);
+      // «ERROR RESPONSE [200]»: el nombre del interceptor, no un fallo.
+      if (code != null && code < 400) return info;
       final client = code != null
           ? code >= 400 && code < 500
           : _status4xx.hasMatch(message);
       if (client) return warn;
+    }
+    if (message.contains('rror')) {
+      final m = _errorWithStatus.firstMatch(message);
+      final code = m == null ? null : int.tryParse(m[1]!);
+      if (code != null && code >= 400 && code < 500) return warn;
     }
     final text = message.contains('rror') || message.contains('ail')
         ? message.replaceAll(_emptyErrorField, '')

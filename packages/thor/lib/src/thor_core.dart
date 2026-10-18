@@ -6,6 +6,7 @@ import 'package:clock/clock.dart';
 import 'package:meta/meta.dart';
 
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/model/gesture.dart';
 import 'package:thor/src/model/log_level.dart';
 import 'package:thor/src/model/session.dart';
 import 'package:thor/src/network/connectivity_inference.dart';
@@ -91,6 +92,7 @@ class ThorCore {
     Map<String, String> appInfo = const {},
     Map<String, String> deviceInfo = const {},
     ThorCapturePolicy capture = const ThorCapturePolicy(),
+    bool announcePrevious = true,
   }) async {
     final existing = _instance;
     if (existing != null) return existing;
@@ -109,6 +111,8 @@ class ThorCore {
 
     SessionJournal? journal;
     RecoveredSession? recovered;
+    ThorCore? created;
+    Object? earlyJournalError;
     if (storageDirectory != null) {
       // Primero mirar si la sesión anterior murió sin cerrar…
       recovered = await SessionJournal.recoverPrevious(storageDirectory);
@@ -117,6 +121,15 @@ class ThorCore {
         directory: storageDirectory,
         session: session,
         fullNetworkOnSuccess: capture.fullNetworkInJournal,
+        // El journal es del SDK: su fallo es UN evento `source: 'thor'`,
+        // nunca un error de la app (ni un bucle de errores).
+        onFailure: (error) {
+          if (created == null) {
+            earlyJournalError = error; // falló al abrir, antes de existir
+          } else {
+            created.recordInternalError('journal', error);
+          }
+        },
       );
       await journal.start();
     }
@@ -133,6 +146,10 @@ class ThorCore {
       // Sin plugin: "sin conexión" se infiere de las peticiones capturadas.
       .._unsubscribeConnectivity = ConnectivityInference.install(recorder);
 
+    created = core;
+    if (earlyJournalError != null) {
+      core.recordInternalError('journal', earlyJournalError!);
+    }
     if (journal != null) {
       // Los errores van a disco de inmediato: si la app está por morir,
       // la causa ya tiene que estar escrita.
@@ -149,8 +166,71 @@ class ThorCore {
           appInfo: appInfo,
           deviceInfo: deviceInfo,
           capture: capture,
+          // La renovación ya dejó su propio `session_start`.
+          announcePrevious: false,
         );
-    return _instance = core;
+    _instance = core;
+    // "¿Cómo terminó la sesión anterior?" — sin marca de fin en el journal
+    // eso no se sabe; aquí queda dicho en la línea de tiempo de ESTA sesión.
+    if (announcePrevious && recovered != null) {
+      core.recorder.record(ThorEventKind.environment, {
+        'signal': 'previous_session',
+        'session': recovered.session.sessionId,
+        'reason': recovered.endReason,
+        if (recovered.lastLifecycleState case final state?) 'state': state,
+        'backgroundMs': recovered.backgroundMs,
+      });
+    }
+    return core;
+  }
+
+  /// Tope de errores internos del SDK por `what` y sesión: pasado eso solo
+  /// se cuentan ([internalErrorsDropped]).
+  static const maxInternalErrors = 3;
+
+  final Map<String, int> _internalErrors = {};
+
+  /// Errores internos descartados por el tope [maxInternalErrors].
+  int internalErrorsDropped = 0;
+
+  /// Graba un fallo del PROPIO SDK (journal, replay en disco…) como evento
+  /// `error` con `source: 'thor'` e `internal: true`, para que el dash lo
+  /// separe de los errores de la app. Con tope por [what] y sesión: un
+  /// disco roto no debe inundar la línea de tiempo (9985 eventos en una
+  /// sesión, el 96% del tablero). Nunca lanza.
+  void recordInternalError(String what, Object error) {
+    try {
+      final n = _internalErrors[what] = (_internalErrors[what] ?? 0) + 1;
+      if (n > maxInternalErrors) {
+        internalErrorsDropped++;
+        return;
+      }
+      recorder.record(ThorEventKind.error, {
+        'source': 'thor',
+        'internal': true,
+        'component': what,
+        'fatal': false,
+        'type': error.runtimeType.toString(),
+        'message': redaction.scrub(
+          cleanLogText('$error', 500, scrub: redaction.scrub),
+        ),
+        if (n == maxInternalErrors) 'last': true,
+      });
+    } on Object {
+      // Un fallo al avisar del fallo: se ignora.
+    }
+  }
+
+  /// ¿[error] es un fallo de E/S sobre un archivo del propio SDK
+  /// (`thor-<id>.jsonl`, `replay-<id>.jsonl` y sus `.on`/`.sent`)? Esos no
+  /// son errores de la app.
+  static bool isInternalFileError(Object error) {
+    if (error is! FileSystemException) return false;
+    final path = error.path ?? '';
+    final i = path.lastIndexOf(RegExp(r'[/\\]'));
+    final name = i < 0 ? path : path.substring(i + 1);
+    return RegExp(r'^(thor|replay)-.*\.(jsonl|on|sent)$').hasMatch(name) ||
+        name == installIdFile;
   }
 
   /// Nombre del archivo (dentro de `storageDirectory`) con el id de
@@ -199,7 +279,7 @@ class ThorCore {
       'signal': 'session_end',
       'reason': reason,
     });
-    await dispose();
+    await dispose(reason: reason);
     final next = await reinit();
     next
       ..recoveredPrevious = null
@@ -442,6 +522,7 @@ class ThorCore {
             : id;
     final clean = _cleanProps(props);
     if (safeId == _userId && _sameJson(clean, _userProps)) return;
+    final previousId = _userId;
     _userId = safeId;
     _userProps = clean;
     recorder.record(ThorEventKind.environment, {
@@ -449,6 +530,7 @@ class ThorCore {
       'id': safeId,
       if (clean != null) 'props': clean,
     });
+    if (safeId == null) _checkSilentLogout(previousId);
   }
 
   static Map<String, Object?>? _cleanProps(Map<String, Object?>? props) {
@@ -465,6 +547,177 @@ class ThorCore {
   static bool _sameJson(Object? a, Object? b) => jsonEncode(a) == jsonEncode(b);
 
   static final _emailShaped = RegExp(r'[^\s@]+@[^\s@]+\.[^\s@]+');
+
+  // ── Señales de alto nivel: permisos, superficies externas, problemas ──
+
+  /// Tiempo total en segundo plano de esta sesión (ms), sumado por el
+  /// adaptador de ciclo de vida. Va en la marca de fin del journal.
+  int backgroundMs = 0;
+
+  /// Graba un permiso del sistema (`environment {signal: 'permission'}`):
+  /// [kind] (`camera`, `microphone`, `speech`, `location`, `photos`,
+  /// `contacts`, `notifications`…), estado [before] → [after] (`granted`,
+  /// `denied`, `restricted`, `limited`, `undetermined`) y si salió el
+  /// diálogo del sistema ([prompt]). [source]: `app` (la app lo reporta),
+  /// `error` (inferido de un error de permiso) u `overlay`.
+  ///
+  /// Se omite si nada cambió y no hubo [prompt]: el mismo `denied` repetido
+  /// en cada pantalla no es una señal nueva.
+  void permission(
+    String kind, {
+    String? before,
+    String? after,
+    bool prompt = false,
+    String source = 'app',
+  }) {
+    final k = cleanLogText(kind, 40);
+    final b = before == null ? null : cleanLogText(before, 40);
+    final a = after == null ? null : cleanLogText(after, 40);
+    final key = '$k|$b|$a|$prompt';
+    if (!prompt && _lastPermission[k] == key) return;
+    _lastPermission[k] = key;
+    recorder.record(ThorEventKind.environment, {
+      'signal': 'permission',
+      'kind': k,
+      if (b != null) 'before': b,
+      if (a != null) 'after': a,
+      'prompt': prompt,
+      'source': source,
+    });
+  }
+
+  final Map<String, String> _lastPermission = {};
+
+  /// Qué permiso nombra un texto de error/excepción de permiso denegado
+  /// (`CameraAccessDenied`, «Permission denied: microphone», «speech
+  /// recognition not authorized»); `null` si no habla de un permiso.
+  /// Heurística barata y conservadora: exige palabra de permiso Y recurso.
+  static String? permissionKindFromText(String text) {
+    final t = text.toLowerCase();
+    final denied = t.contains('permission') ||
+        t.contains('permiso') ||
+        t.contains('denied') ||
+        t.contains('denegad') ||
+        t.contains('not authorized') ||
+        t.contains('unauthorized') ||
+        t.contains('accessdenied') ||
+        t.contains('access denied');
+    if (!denied) return null;
+    if (t.contains('camera') || t.contains('cámara') || t.contains('camara')) {
+      return 'camera';
+    }
+    if (t.contains('microphone') ||
+        t.contains('micrófono') ||
+        t.contains('microfono') ||
+        t.contains('record_audio') ||
+        t.contains('audio recording')) {
+      return 'microphone';
+    }
+    if (t.contains('speech')) return 'speech';
+    if (t.contains('location') || t.contains('ubicaci')) return 'location';
+    if (t.contains('photo') || t.contains('gallery')) return 'photos';
+    if (t.contains('contacts')) return 'contacts';
+    if (t.contains('notification')) return 'notifications';
+    return null;
+  }
+
+  /// Graba una superficie externa (`environment {signal:
+  /// 'external_surface'}`): la app cedió la pantalla a otra cosa — Safari /
+  /// Chrome Custom Tab (`in_app_browser`), otra app (`external_app`), un
+  /// WebView propio (`webview`) o una hoja del sistema (`system_ui`).
+  /// [host] es solo el host (nunca la ruta ni la query: pueden traer
+  /// secretos); [open] `true` al abrir y `false` al cerrar; [ms] cuánto
+  /// estuvo abierta (al cerrar).
+  void externalSurface(
+    String host, {
+    String mode = 'external_app',
+    bool open = true,
+    int? ms,
+  }) {
+    final clean = cleanLogText(
+      Uri.tryParse(host)?.host.isNotEmpty ?? false
+          ? Uri.parse(host).host
+          : host,
+      120,
+      scrub: redaction.scrub,
+    );
+    recorder.record(ThorEventKind.environment, {
+      'signal': 'external_surface',
+      'host': clean,
+      'mode': cleanLogText(mode, 40),
+      'state': open ? 'open' : 'close',
+      if (ms != null) 'ms': ms,
+    });
+  }
+
+  /// Graba un PROBLEMA que el usuario vio o sufrió aunque no haya una
+  /// excepción (diálogo de error, congelamiento, toque muerto, pantalla
+  /// vacía, logout silencioso…) como evento `error` con [source] propio y
+  /// `fatal: false`: entra a los issues igual que un error real. Nunca
+  /// lanza.
+  void problem(
+    String source,
+    String type,
+    String message, {
+    Map<String, Object?> extra = const {},
+    String? origin,
+  }) {
+    try {
+      recorder.record(
+        ThorEventKind.error,
+        {
+          'source': source,
+          'fatal': false,
+          'type': type,
+          'message': cleanLogText(message, 500, scrub: redaction.scrub),
+          ...extra,
+          ...lastActionPayload(),
+        },
+        origin: origin,
+      );
+    } on Object {
+      // Observar jamás debe tumbar a la app.
+    }
+  }
+
+  /// `{lastAction: 'tocó «X» (#n)'}` con el último toque, o vacío.
+  Map<String, Object?> lastActionPayload() {
+    final tap = store
+        .ofKind(ThorEventKind.interaction)
+        .reversed
+        .where((e) => ThorGesture.isPress(e.payload['gesture']))
+        .firstOrNull;
+    if (tap == null) return const {};
+    final label = tap.payload['label'] ?? tap.payload['widget'];
+    return {'lastAction': 'tocó «$label» (#${tap.seq})'};
+  }
+
+  /// Ventana tras un toque en la que un `setUser(null)` todavía cuenta como
+  /// acción del usuario ("Cerrar sesión" + diálogo de confirmación).
+  static const silentLogoutWindow = Duration(seconds: 5);
+
+  /// `setUser(null)` sin que el usuario haya tocado nada hace un momento:
+  /// la sesión de la app terminó sola (refresh de token rechazado, signoff
+  /// del backend). Es un problema visible — el carrito y el perfil
+  /// desaparecen — que no deja ninguna excepción.
+  void _checkSilentLogout(String? previous) {
+    if (previous == null) return;
+    final now = clock.now().toUtc();
+    final tap = store
+        .ofKind(ThorEventKind.interaction)
+        .reversed
+        .where((e) => ThorGesture.isPress(e.payload['gesture']))
+        .firstOrNull;
+    if (tap != null && now.difference(tap.atUtc) <= silentLogoutWindow) return;
+    problem(
+      'silent_logout',
+      'SilentLogout',
+      'La sesión terminó sin que el usuario lo pidiera (usuario → anónimo)',
+      extra: {
+        if (tap != null) 'sinceTapMs': now.difference(tap.atUtc).inMilliseconds,
+      },
+    );
+  }
 
   /// Registra un proveedor de contexto de dominio bajo [key].
   void addContext(String key, ThorContextProvider provider) {
@@ -487,7 +740,9 @@ class ThorCore {
   }
 
   /// Cierre limpio (sesión terminó bien). Tras esto, [instance] es `null`.
-  Future<void> dispose() async {
+  ///
+  /// [reason] (`clean`, `renewed`…) queda en la marca de fin del journal.
+  Future<void> dispose({String reason = 'clean'}) async {
     // Los cURLs crudos son de ESTA sesión: mueren con ella.
     RawNetworkStore.clear();
     // Los conteos de ráfagas abiertas se escriben antes del cierre: son
@@ -495,7 +750,7 @@ class ThorCore {
     recorder.flushBursts();
     _unsubscribeJournal?.call();
     _unsubscribeConnectivity?.call();
-    await journal?.close();
+    await journal?.close(reason: reason, backgroundMs: backgroundMs);
     if (identical(_instance, this)) _instance = null;
   }
 

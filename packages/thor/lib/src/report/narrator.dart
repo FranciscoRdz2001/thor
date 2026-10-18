@@ -96,6 +96,19 @@ class ThorNarrator {
                   ? '· Teclado abierto en un campo de texto'
                   : '· Teclado abierto en «$label»',
             );
+          } else if (gesture == ThorGesture.textEdit) {
+            final len = event.payload['length'];
+            final source = event.payload['source'];
+            final what = event.payload['empty'] == true
+                ? 'lo dejó vacío'
+                : len is int
+                    ? 'quedó con $len caracteres'
+                    : 'lo editó';
+            nested(
+              event,
+              '· ${label == null ? 'Campo de texto' : '«$label»'}: $what'
+              '${source == 'pasted_or_scanned' ? ' (pegado o escaneado)' : ''}',
+            );
           } else if (gesture == ThorGesture.longPress) {
             numbered(
               event,

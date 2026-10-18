@@ -15,7 +15,41 @@ class RecoveredSession {
     required this.events,
     required this.endedCleanly,
     required this.corruptLines,
+    this.closeReason,
+    this.closeBackgroundMs,
   });
+
+  /// Motivo declarado en la marca de cierre (`clean`, `renewed`…); `null`
+  /// si no hay marca o es de una versión anterior.
+  final String? closeReason;
+
+  /// Milisegundos en segundo plano que traía la marca de cierre.
+  final int? closeBackgroundMs;
+
+  /// Cómo terminó la sesión: `clean` (cierre normal, o el motivo que
+  /// declaró), `crash` (error fatal o muerta en primer plano) o `killed`
+  /// (la mató el usuario o el SO en segundo plano).
+  String get endReason {
+    if (endedCleanly) return closeReason ?? 'clean';
+    return crashed ? 'crash' : 'killed';
+  }
+
+  /// Total de tiempo en segundo plano de la sesión: el declarado al cerrar
+  /// o, si murió sin cerrar, la suma de los `backgroundMs` de sus eventos
+  /// de ciclo de vida.
+  int get backgroundMs {
+    final declared = closeBackgroundMs;
+    if (declared != null) return declared;
+    var total = 0;
+    for (final e in events) {
+      if (e.kind == ThorEventKind.environment &&
+          e.payload['signal'] == 'lifecycle') {
+        final ms = e.payload['backgroundMs'];
+        if (ms is int) total += ms;
+      }
+    }
+    return total;
+  }
 
   /// Cabecera de la sesión recuperada.
   final ThorSession session;
@@ -88,6 +122,8 @@ class SessionJournal {
     this.flushThreshold = 25,
     this.maxSessions = 10,
     this.fullNetworkOnSuccess = false,
+    this.maxWriteFailures = 3,
+    this.onFailure,
   });
 
   /// Directorio raíz de journals (privado de la app).
@@ -113,6 +149,14 @@ class SessionJournal {
   /// escriben siempre completas — ahí el cuerpo ES la causa.
   final bool fullNetworkOnSuccess;
 
+  /// Escrituras seguidas que pueden fallar antes de rendirse: pasado el
+  /// tope el journal se apaga (ver [disabled]) en vez de insistir en bucle.
+  final int maxWriteFailures;
+
+  /// Se llama UNA vez, cuando el journal se rinde. El núcleo lo usa para
+  /// dejar un solo error de origen `thor` (no del código de la app).
+  final void Function(Object error)? onFailure;
+
   static const _sessionPrefix = 'thor-';
   static const _sessionSuffix = '.jsonl';
 
@@ -120,6 +164,13 @@ class SessionJournal {
   final List<String> _pending = [];
   Timer? _flushTimer;
   bool _closed = false;
+  int _writeFailures = 0;
+  bool _disabled = false;
+
+  /// `true` si el journal se rindió tras [maxWriteFailures] fallos de
+  /// escritura seguidos (directorio borrado, disco lleno…): ya no escribe
+  /// nada y no vuelve a avisar. La app sigue; solo se pierde la persistencia.
+  bool get disabled => _disabled;
 
   /// Ruta del archivo de esta sesión.
   File get file => File(
@@ -130,12 +181,67 @@ class SessionJournal {
       );
 
   /// Abre el journal: escribe la cabecera de sesión y purga sesiones viejas.
+  ///
+  /// Nunca lanza: si no se puede abrir el archivo el journal queda apagado
+  /// ([disabled]) y la app arranca igual.
   Future<void> start() async {
-    await directory.create(recursive: true);
-    _sink = file.openWrite(mode: FileMode.writeOnlyAppend);
-    _pending.add(jsonEncode({'type': 'session', ...session.toJson()}));
+    try {
+      await directory.create(recursive: true);
+      _openSink();
+    } on Object catch (e) {
+      _giveUp(e);
+      return;
+    }
+    _pending.add(_headerLine());
     await flush();
     await _purgeOldSessions();
+  }
+
+  String _headerLine() =>
+      jsonEncode({'type': 'session', ...session.toJson()});
+
+  void _openSink() {
+    final sink = file.openWrite(mode: FileMode.writeOnlyAppend);
+    // Un error de apertura/escritura también sale por `done`; sin oyente
+    // subiría como error NO capturado de la zona (y, en la app, como un
+    // error suyo). Lo vemos por `flush`.
+    unawaited(sink.done.then((_) {}, onError: (Object _) {}));
+    _sink = sink;
+  }
+
+  /// Re-crea el directorio y el archivo (alguien los borró: reinstalación
+  /// del build, limpieza de caché) y vuelve a escribir la cabecera para que
+  /// el archivo siga siendo una sesión legible. `false` si no se pudo.
+  Future<bool> _reopen() async {
+    try {
+      try {
+        await _sink?.close();
+      } on Object {
+        // El sink viejo ya apuntaba a un archivo que no existe.
+      }
+      _sink = null;
+      await directory.create(recursive: true);
+      final fresh = !file.existsSync();
+      _openSink();
+      if (fresh) _sink!.writeln(_headerLine());
+      return true;
+    } on Object {
+      return false;
+    }
+  }
+
+  void _giveUp(Object error) {
+    if (_disabled) return;
+    _disabled = true;
+    _pending.clear();
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    _sink = null;
+    try {
+      onFailure?.call(error);
+    } on Object {
+      // Avisar jamás puede romper nada.
+    }
   }
 
   /// Encola [event]; irá a disco en el próximo lote.
@@ -143,7 +249,7 @@ class SessionJournal {
   /// [urgent] fuerza flush inmediato — para errores: si la app va a morir,
   /// que el evento que explica por qué ya esté en disco.
   void append(ThorEvent event, {bool urgent = false}) {
-    if (_closed || _sink == null) return;
+    if (_closed || _disabled || _sink == null) return;
     final json = event.toJson();
     if (!fullNetworkOnSuccess && event.kind == ThorEventKind.network) {
       json['payload'] = lightNetworkPayload(event.payload);
@@ -164,6 +270,8 @@ class SessionJournal {
     'durationMs',
     'requestBytes',
     'responseBytes',
+    // Cifras de una regla de endpoint: pesan poco y son el motivo de la regla.
+    'extracts',
   };
 
   /// Versión ligera de un payload de red: las exitosas se quedan con lo
@@ -188,37 +296,75 @@ class SessionJournal {
   /// en vuelo y un `await flush()` posterior podían resolverse fuera de
   /// orden y el caller creía persistido lo que aún no tocaba disco
   /// (flake real cazado en CI).
+  ///
+  /// Nunca falla: un error de disco se cuenta ([maxWriteFailures]) y, si
+  /// persiste, apaga el journal. Quien lo llama con `unawaited` no puede
+  /// dejar un error sin manejar (era el bucle de `PathNotFoundException`).
   Future<void> flush() {
-    final next = _flushChain.then((_) => _doFlush());
-    // La cadena nunca se rompe por un fallo de escritura previo.
-    _flushChain = next.catchError((Object _) {});
+    final next = _flushChain.then((_) => _doFlush()).catchError(_writeFailed);
+    _flushChain = next;
     return next;
   }
 
   Future<void> _doFlush() async {
     _flushTimer?.cancel();
     _flushTimer = null;
-    final sink = _sink;
-    if (sink == null || _pending.isEmpty) return;
+    if (_disabled || _sink == null || _pending.isEmpty) return;
     final batch = _pending.join('\n');
     _pending.clear();
-    sink.writeln(batch);
-    await sink.flush();
+    // Si el archivo desapareció, el descriptor abierto sigue "escribiendo"
+    // en un inodo huérfano sin error: se detecta aquí, no por una excepción.
+    var reopened = false;
+    if (!file.existsSync()) {
+      reopened = await _reopen();
+      if (!reopened) return _writeFailed(const FileSystemException('journal'));
+    }
+    try {
+      _sink!.writeln(batch);
+      await _sink!.flush();
+      _writeFailures = 0;
+    } on Object catch (e) {
+      // Un reintento tras recrear el archivo; si tampoco, cuenta como fallo.
+      if (!reopened && await _reopen()) {
+        try {
+          _sink!.writeln(batch);
+          await _sink!.flush();
+          _writeFailures = 0;
+          return;
+        } on Object catch (e2) {
+          return _writeFailed(e2);
+        }
+      }
+      _writeFailed(e);
+    }
+  }
+
+  void _writeFailed(Object error) {
+    if (++_writeFailures >= maxWriteFailures) _giveUp(error);
   }
 
   /// Cierre limpio: marca de fin + flush + cierre del archivo.
   /// Si esto nunca corre (crash), [recoverPrevious] lo detecta.
-  Future<void> close() async {
+  ///
+  /// [reason] (`clean`, `renewed`…) y [backgroundMs] quedan en la marca de
+  /// fin: la siguiente ejecución sabe cómo terminó esta sesión.
+  Future<void> close({String reason = 'clean', int? backgroundMs}) async {
     if (_closed) return;
     _closed = true;
     _pending.add(
       jsonEncode({
         'type': 'end',
         'atUtc': DateTime.now().toUtc().toIso8601String(),
+        'reason': reason,
+        if (backgroundMs != null) 'backgroundMs': backgroundMs,
       }),
     );
     await flush();
-    await _sink?.close();
+    try {
+      await _sink?.close();
+    } on Object {
+      // Cerrar un archivo que ya no existe no es motivo de error.
+    }
     _sink = null;
   }
 
@@ -270,6 +416,10 @@ class SessionJournal {
     return null;
   }
 
+  /// Lee un journal concreto (`null` si no se puede leer o no tiene
+  /// cabecera de sesión).
+  static Future<RecoveredSession?> read(File file) => _parse(file);
+
   static Future<RecoveredSession?> _parse(File file) async {
     final List<String> lines;
     try {
@@ -280,6 +430,8 @@ class SessionJournal {
     ThorSession? session;
     final events = <ThorEvent>[];
     var ended = false;
+    String? reason;
+    int? bg;
     var corrupt = 0;
     for (final line in lines) {
       if (line.trim().isEmpty) continue;
@@ -292,6 +444,8 @@ class SessionJournal {
             events.add(ThorEvent.fromJson(json));
           case 'end':
             ended = true;
+            reason = json['reason'] as String?;
+            bg = json['backgroundMs'] as int?;
         }
       } on Object {
         // Línea a medio escribir (crash durante flush) o corrupta: se cuenta
@@ -305,6 +459,8 @@ class SessionJournal {
       events: events,
       endedCleanly: ended,
       corruptLines: corrupt,
+      closeReason: reason,
+      closeBackgroundMs: bg,
     );
   }
 }

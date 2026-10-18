@@ -6,6 +6,7 @@ import 'dart:typed_data' show BytesBuilder;
 import 'package:clock/clock.dart';
 
 import 'package:thor/src/model/event.dart';
+import 'package:thor/src/network/body_rules.dart';
 import 'package:thor/src/network/raw_network_store.dart';
 import 'package:thor/src/redaction/redaction_policy.dart';
 import 'package:thor/src/thor_core.dart';
@@ -44,6 +45,23 @@ class ThorNetworkCapture {
   /// `requestBytes` / `responseBytes`. El replay recorta después a su
   /// propio tope (4 KB por defecto, `ThorReplayConfig.maxBodyBytes`).
   static const int maxBodyBytes = 8 * 1024;
+
+  /// Reglas por endpoint: más bytes de cuerpo y extractos JSONPath (ver
+  /// [ThorBodyRule]). Vacío por defecto = todo con el tope global.
+  static final List<ThorBodyRule> bodyRules = [];
+
+  /// La primera regla de [bodyRules] que casa con [path], o `null`.
+  static ThorBodyRule? ruleFor(String path) {
+    if (bodyRules.isEmpty) return null;
+    for (final rule in bodyRules) {
+      try {
+        if (rule.matches(path)) return rule;
+      } on Object {
+        // Una regex inválida no tumba la captura: esa regla no aplica.
+      }
+    }
+    return null;
+  }
 
   /// Si además del cURL redactado se retiene el CRUDO (reproducible) en el
   /// [RawNetworkStore] — solo memoria, jamás persistido. Apágalo si ni
@@ -356,13 +374,25 @@ class _SpyRequest implements HttpClientRequest {
   HttpClientResponse _spyResponse(HttpClientResponse response) {
     if (_recorded) return response;
     _recorded = true;
+    final rule = ThorNetworkCapture.ruleFor(inner.uri.path);
+    // Una regla con extractos necesita el cuerpo ENTERO (hasta su tope) para
+    // evaluarlos; al evento solo va lo que dice `maxBytes`.
+    final retain = rule == null
+        ? ThorNetworkCapture.maxBodyBytes
+        : [
+            ThorNetworkCapture.maxBodyBytes,
+            rule.maxBytes ?? 0,
+            if (rule.extracts.isNotEmpty) rule.extractMaxBytes,
+          ].reduce((a, b) => a > b ? a : b);
     return _SpyResponse(
       response,
+      retainCap: retain,
       onDone: (bodyBytes, {required truncated, required total}) => _record(
         response: response,
         responseBody: bodyBytes,
         responseTruncated: truncated,
         responseTotal: total,
+        rule: rule,
       ),
     );
   }
@@ -379,6 +409,7 @@ class _SpyRequest implements HttpClientRequest {
     bool responseTruncated = false,
     int? responseTotal,
     Object? error,
+    ThorBodyRule? rule,
   }) {
     ThorNetworkCapture._open.remove(this);
     final core = ThorCore.instance;
@@ -398,11 +429,35 @@ class _SpyRequest implements HttpClientRequest {
             path,
             _decodeBody(_requestBody.toBytes(), requestMime, redaction),
           );
-    final decodedResponse = responseBody == null || responseBody.isEmpty
+    // Extractos sobre el cuerpo ENTERO ya redactado (nunca saca un secreto),
+    // y al evento solo los bytes que la regla (o el tope global) permiten.
+    final extracts = rule == null ||
+            rule.extracts.isEmpty ||
+            responseBody == null ||
+            responseBody.isEmpty
+        ? null
+        : _extract(
+            rule,
+            responseBody,
+            responseMime,
+            redaction,
+            path,
+            truncated: responseTruncated,
+          );
+    final ruleCap = rule?.maxBytes ?? 0;
+    final keepCap = ruleCap > ThorNetworkCapture.maxBodyBytes
+        ? ruleCap
+        : ThorNetworkCapture.maxBodyBytes;
+    final keptBody = responseBody != null && responseBody.length > keepCap
+        ? responseBody.sublist(0, keepCap)
+        : responseBody;
+    final bodyCut =
+        keptBody != null && keptBody.length < (responseBody?.length ?? 0);
+    final decodedResponse = keptBody == null || keptBody.isEmpty
         ? null
         : redaction.redactEndpointBody(
             path,
-            _decodeBody(responseBody, responseMime, redaction),
+            _decodeBody(keptBody, responseMime, redaction),
           );
     final payload = <String, Object?>{
       'method': inner.method,
@@ -426,16 +481,21 @@ class _SpyRequest implements HttpClientRequest {
         // con chunked y el tamaño comprimido con gzip.
         'responseBytes':
             (responseTotal ?? 0) > 0 ? responseTotal : response.contentLength,
-        if (responseBody != null && responseBody.isNotEmpty) ...{
+        if (keptBody != null && keptBody.isNotEmpty) ...{
           'responseBody': decodedResponse,
-          if (!_captures(responseBody, responseMime, redaction))
+          if (!_captures(keptBody, responseMime, redaction))
             'responseBodyOmitted': true,
         },
         // Explícito: cortado por el tope de captura O por el recorte de
         // valores de la política (`…(+N)`). El panel lo muestra.
         if (responseTruncated ||
+            bodyCut ||
             ThorNetworkCapture.bodyWasCut(decodedResponse))
           'responseBodyTruncated': true,
+        // Cuántos bytes de este cuerpo se conservan por regla del endpoint
+        // (el replay no lo recorta por debajo de esto).
+        if (keepCap > ThorNetworkCapture.maxBodyBytes) 'bodyCap': keepCap,
+        if (extracts != null) 'extracts': extracts,
       },
       if (error != null) ...{
         'error': error.runtimeType.toString(),
@@ -452,6 +512,45 @@ class _SpyRequest implements HttpClientRequest {
     if (event != null && ThorNetworkCapture.captureRawCurl) {
       RawNetworkStore.put(event.seq, _buildRawCurl(requestHeaders));
     }
+  }
+
+  /// Evalúa los extractos de [rule] sobre el cuerpo completo ya redactado.
+  /// Nunca lanza: lo que no se pueda calcular queda como `{_error: …}`.
+  static Map<String, Object?> _extract(
+    ThorBodyRule rule,
+    List<int> bytes,
+    String? mimeType,
+    RedactionPolicy redaction,
+    String path, {
+    required bool truncated,
+  }) {
+    final out = <String, Object?>{};
+    try {
+      final decoded = redaction.redactEndpointBody(
+        path,
+        _decodeBody(bytes, mimeType, redaction),
+      );
+      final structured = decoded is Map || decoded is List;
+      for (final MapEntry(:key, :value) in rule.extracts.entries) {
+        if (!structured) {
+          out[key] = {
+            '_error': truncated
+                ? 'cuerpo cortado en ${bytes.length} bytes '
+                    '(sube extractMaxBytes)'
+                : 'el cuerpo no es JSON',
+          };
+          continue;
+        }
+        try {
+          out[key] = JsonPath.summarize(JsonPath.parse(value).eval(decoded));
+        } on FormatException catch (e) {
+          out[key] = {'_error': e.message};
+        }
+      }
+    } on Object catch (e) {
+      out['_error'] = '$e';
+    }
+    return out;
   }
 
   /// cURL con headers/body/query YA redactados — para tickets y chats sin
@@ -718,9 +817,12 @@ class _SpyRequest implements HttpClientRequest {
 /// Envoltura de la respuesta: cuenta y retiene (hasta el tope) los bytes del
 /// cuerpo sin alterar el stream que ve la app.
 class _SpyResponse extends Stream<List<int>> implements HttpClientResponse {
-  _SpyResponse(this.inner, {required this.onDone});
+  _SpyResponse(this.inner, {required this.onDone, required this.retainCap});
 
   final HttpClientResponse inner;
+
+  /// Bytes del cuerpo que se retienen (el tope global o el de una regla).
+  final int retainCap;
   final void Function(
     List<int> body, {
     required bool truncated,
@@ -741,7 +843,7 @@ class _SpyResponse extends Stream<List<int>> implements HttpClientResponse {
     StreamTransformer<List<int>, List<int>>.fromHandlers(
       handleData: (chunk, sink) {
         _total += chunk.length;
-        final remaining = ThorNetworkCapture.maxBodyBytes - _body.length;
+        final remaining = retainCap - _body.length;
         if (remaining > 0) {
           _body.add(
             chunk.length <= remaining ? chunk : chunk.sublist(0, remaining),
